@@ -13,6 +13,6 @@ for stu_dict in students:
         # 找到就退出
         break
 else:
-    # 如果遍历完成都没有找到搜索目标，执行以下
+    # 如果遍历实现都没有找到搜索目标，执行以下
     print(f"抱歉没有找到 {find_age}")
 print("循环结束")
