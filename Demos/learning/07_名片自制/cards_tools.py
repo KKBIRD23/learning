@@ -35,7 +35,7 @@ def find_card():
             print("=" * 50)
             print(f'{card_dict["name"]}\t\t{card_dict["phone"]}\t\t{card_dict["qq"]}\t\t{card_dict["email"]}')
         # 找到以后调用自定义函数对卡后续操作——修改|删除
-        pass
+        # TODO 删除|修改
     else:
         print(f"抱歉，没有找到 {search_name}")
 
@@ -53,6 +53,6 @@ def show_all():
               f'{card_dict["email"]}')
 
 
-# 4. 删除|修改
+# 4. TODO 删除|修改
 def deal_card():
     pass
