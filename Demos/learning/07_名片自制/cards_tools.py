@@ -53,6 +53,28 @@ def show_all():
               f'{card_dict["email"]}')
 
 
-# 4. TODO 删除|修改
-def deal_card():
-    pass
+# 4. 删除|修改
+def deal_card(card_dict):
+    print("=" * 50)
+    print("欢迎使用名片管理系统！请输入对应数字选择功能：")
+    for menu in ["[1]修改名片", "[2]删除名片", "[3]返回上级菜单"]:
+        print(menu)
+    print("=" * 50)
+
+    choose_str = input("请输入数字进行选择")
+    if choose_str in ["1", "2", "3"]:
+        if choose_str == "1":
+            # 修改名片
+            card_dict["name"] = input("请输入名字，回车不修改")
+            card_dict["phone"] = input("请输入电话，回车不修改")
+            card_dict["qq"] = input("请输入QQ，回车不修改")
+            card_dict["email"] = input("请输入邮箱，回车不修改")
+
+        elif choose_str == "2":
+            # 删除名片
+            cards_list.remove(card_dict)
+            print("名片删除成功")
+    else:
+        print("回到主菜单")
+
+# 5. 处理名片修改
