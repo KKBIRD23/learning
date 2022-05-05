@@ -2,7 +2,7 @@ from sys import exit
 # from Image import _ImageCrop
 from PIL import Image
 import numpy as np
-import zbar
+import pyzbar as zbar
 import cv2
 
 # 加载图片并把它转换为灰度图片
@@ -38,7 +38,7 @@ for i in range(0, x):
 
 # 保留面积大于8000的轮廓
 for m in range(0, x):
-    if s[m] >= 8000 and s[m] <= 25000:
+    if 8000 <= s[m] <= 25000:
         a.append(s[m])
     else:
         continue
@@ -50,7 +50,7 @@ z = max(a)
 
 for k in range(0, x):
     # 增加一些筛选条件
-    if s[k] >= 8000 and s[k] <= 25000 and ((z - s[k]) <= 8500):
+    if 8000 <= s[k] <= 25000 and ((z - s[k]) <= 8500):
         rect = cv2.minAreaRect(contours[k])  # 返回矩形的中心点坐标，长宽，旋转角度
         box = np.int0(cv2.boxPoints(rect))
         cv2.drawContours(image, [box], -1, (255, 0, 0), 2)  # 画一个方框把条形码区域圈起来
