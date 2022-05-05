@@ -72,8 +72,7 @@ for k in range(0, x):
         image0 = zbar.Image(width, height, 'Y800', raw)
         scanner.scan(image0)
         for symbol in image0:
-            print
-            'decoded', symbol.type, 'symbol', '"%s"' % symbol.data
+            print('decoded', symbol.type, 'symbol', '"%s"' % symbol.data)
     else:
         continue
 
