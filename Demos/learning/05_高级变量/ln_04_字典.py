@@ -1,9 +1,9 @@
 # 字典是一个无需的数据集合
-xiaoming ={"name": "小明",
-           "age": 18,
-           "gender": True,
-           "weight": 75.5,
-           "height": 1.75}
+xiaoming = {"name": "小明",
+            "age": 18,
+            "gender": True,
+            "weight": 75.5,
+            "height": 1.75}
 
 # 取值
 print(xiaoming["name"])

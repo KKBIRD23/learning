@@ -11,6 +11,7 @@ class Tools(object):
     @classmethod
     def show_tool_count(cls):
         print(f'当前使用这个类的对象个数为 {Tools.count}')
+        print(f'当前使用这个类的对象个数为 {cls.count}')
 
     def __init__(self, name):
         self.name = name
