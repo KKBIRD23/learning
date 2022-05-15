@@ -24,6 +24,7 @@ class XiaoTianQuan(Dog):
     def fly(self):
         print("我会飞")
 
+    def bark(self):
         # 使用super扩展
         # 1. 针对子类的特有需求，编写代码
         print("嘿嘿嘿")
