@@ -24,12 +24,11 @@ class Game(object):
     def show_top_score(cls):
         print(Game.player_dic)
 
-        # for top_player in Game.player_dic:
-        #     a = int(top_player["player_score"])
-        #     if a >= int(top_player["player_score"]):
-        #
-        # TODO 这里没搞定
-        # print(f'这个游戏的Top玩家是： {}')
+        tmp_list = []
+        for top_player in Game.player_dic:
+            tmp_list.append(Game.player_dic[top_player])
+
+        print(f'这个游戏的最高分是： {max(tmp_list)}')
 
     @staticmethod
     def show_help():
