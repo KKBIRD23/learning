@@ -22,13 +22,14 @@ class Game(object):
 
     @classmethod
     def show_top_score(cls):
-        print(Game.player_dic)
+        print(cls.player_dic)
 
-        tmp_list = []
-        for top_player in Game.player_dic:
-            tmp_list.append(Game.player_dic[top_player])
+        # 生成一个空字典，存放颠倒后的字典
+        tmp_list = {}
+        for key in cls.player_dic:
+            tmp_list[str(cls.player_dic[key])] = key
 
-        print(f'这个游戏的最高分是： {max(tmp_list)}')
+        print(f'这个游戏的TOP玩家是：”{tmp_list[max(tmp_list)]}” 他的得分是”{max(tmp_list)}”')
 
     @staticmethod
     def show_help():
