@@ -4,15 +4,21 @@
 语法为：
 try:
     # 尝试执行的代码
-    pass
+
 except 错误类型1:
     # 针对错误类型1对应的代码处理
-    pass
+
 except (错误类型2, 错误类型3):
     # 针对错误类型2和错误类型3，对应的代码处理
-    pass
+
 except Exception as result:
     print(f'未知错误 {result}')
+
+else:
+    # 没有异常才会执行的代码
+
+finally:
+    # 无论是否有异常，都会执行的代码
 """
 
 
