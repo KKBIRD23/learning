@@ -40,3 +40,9 @@ except (ZeroDivisionError, ValueError):
 # 未知错误(result是个变量名而已，可以改成其他的)
 except Exception as result:
     print(f'未知错误 {result}')
+# 没有错误才执行
+else:
+    print("居然没有错？？")
+# 无论是否出错，都执行
+finally:
+    print("程序和程序员有一个能跑就行！")
