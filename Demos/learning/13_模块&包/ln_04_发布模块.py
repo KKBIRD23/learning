@@ -47,4 +47,12 @@ https://docs.python.org/zh-cn/2/distutils/apiref.html
         │  └─__pycache__
         └─ln_03_message.egg-info
 
+4. 安装模块
+tar -zxvf ln_03_message-1.0.tar.gz
+sudo python setup.py install
+
+5. 卸载模块
+先导入模块，然后利用模块的 `__file__` 内置属性可看到模块存放的路径，然后直接删除目录即可
+anaconda环境的包安装在 anaconda3\lib\site-packages\ 下，最好使用anaconda去管理卸载
+    - pip uninstall 包名
 """
