@@ -13,6 +13,10 @@ setup(name="ln_03_message",  # 包名
       url="https://github.com/KKBIRD23",  # 作者主页
       py_modules=["ln_03_message.send_message",
                   "ln_03_message.receive_message"])  # 包内包含的模块
+
+有关字典参数的详细信息，可以参阅官网：
+https://docs.python.org/zh-cn/2/distutils/apiref.html
+
 2. 构建模块
     - 要构建模块，setup.py只能在终端中执行，而不能在pycharm中执行
     python setup.py build  # 后面要加 `build` 参数
