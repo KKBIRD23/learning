@@ -10,4 +10,3 @@ setup(name="ln_03_message",  # 包名
       url="https://github.com/KKBIRD23",  # 作者主页
       py_modules=["ln_03_message.send_message",
                   "ln_03_message.receive_message"])  # 包内包含的模块
-
