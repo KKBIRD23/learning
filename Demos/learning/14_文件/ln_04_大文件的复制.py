@@ -13,7 +13,7 @@ while True:
     # if not file_read.readline():
     #     break
     # file_write.write(file_read.readline())
-    # 为啥这个TMD会跳着读？？？
+    # 为啥这个TMD会跳着读？？？ 搞不清楚再试不想
 
 # 3. 关闭文件
 file_read.close()
