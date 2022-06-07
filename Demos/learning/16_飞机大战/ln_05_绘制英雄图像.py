@@ -11,15 +11,16 @@ screen = pygame.display.set_mode((480, 700))
 bg = pygame.image.load("./images/background.png")
 # 2. blit绘制图像
 screen.blit(bg, (0, 0))
-# 3.update刷新显示
-pygame.display.update()
+# # 3.update刷新显示
+# pygame.display.update()
 
 # 绘制英雄的飞机,png是支持透明的
 # 1. 加载图片
 hero = pygame.image.load("./images/me1.png")
 # 2. blit绘制图片
 screen.blit(hero, (200, 500))
-# 3. update刷新显示
+
+# 绘制工作完成后,统一update刷新显示
 pygame.display.update()
 
 while True:
