@@ -1,3 +1,12 @@
+"""
+在游戏初始化时 定义一个变量调用 pygame.Rect 记录英雄的初始位置
+在游戏循环中 每次让英雄的 y-1
+y<=0 将英雄移动到屏幕底部
+
+每一次调用 update() 方法之前,需要把所有的游戏图像都重新绘制一遍
+而且应该最先重新绘制游戏的 背景图像
+"""
+
 import pygame
 
 pygame.init()
@@ -25,6 +34,9 @@ pygame.display.update()
 
 # 创建时钟对象
 clock = pygame.time.Clock()
+
+# 1. 定义rect记录飞机的初始位置
+hero_rect = pygame.Rect
 
 # 这个循环在游戏中叫做"游戏循环",当代码执行到这里才意味着游戏的开始
 while True:
