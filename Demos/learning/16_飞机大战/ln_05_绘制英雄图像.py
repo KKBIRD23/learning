@@ -23,6 +23,7 @@ screen.blit(hero, (200, 500))
 # 绘制工作完成后,统一update刷新显示
 pygame.display.update()
 
+# 这个循环在游戏中叫做"游戏循环",当代码执行到这里才意味着游戏的开始
 while True:
     pass
 
