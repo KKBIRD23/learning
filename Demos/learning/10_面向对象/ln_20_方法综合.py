@@ -25,17 +25,17 @@
 
 
 class Game(object):
-    # 历史最高分
+    # 历史最高分,这是一个类属性
     top_score = 0
 
     def __init__(self, player_name):
         self.player_name = player_name
 
-    @staticmethod
+    @staticmethod  # 静态方法
     def show_help():
         print("这是游戏帮助： 让僵尸进入大门")
 
-    @classmethod
+    @classmethod  # 类方法
     def show_top_score(cls):
         print(f'历史记录： {cls.top_score}')
 
