@@ -1,28 +1,28 @@
 """
-ÅÉÉú¾«Áé×ÓÀà
-- ¶¨Òå GameSprite ¼¯³É×Ô pygame.sprite.Sprite
+æ´¾ç”Ÿç²¾çµå­ç±»
+- å®šä¹‰ GameSprite é›†æˆè‡ª pygame.sprite.Sprite
 
-×¢Òâ:
-- Èç¹ûÒ»¸öÀàµÄ¸¸Àà²»ÊÇobject,ÔÚÖØÐ´`³õÊ¼»¯·½·¨`µÄÊ±ºò,Ò»¶¨ÒªÏÈsuper()Ò»ÏÂ¸¸ÀàµÄ__init__·½·¨
-- ÒÔ´ËÀ´±£Ö¤¸¸ÀàµÄ__init__´úÂëÄÜ¹»±»Õý³£µÄÖ´ÐÐ
+æ³¨æ„:
+- å¦‚æžœä¸€ä¸ªç±»çš„çˆ¶ç±»ä¸æ˜¯object,åœ¨é‡å†™`åˆå§‹åŒ–æ–¹æ³•`çš„æ—¶å€™,ä¸€å®šè¦å…ˆsuper()ä¸€ä¸‹çˆ¶ç±»çš„__init__æ–¹æ³•
+- ä»¥æ­¤æ¥ä¿è¯çˆ¶ç±»çš„__init__ä»£ç èƒ½å¤Ÿè¢«æ­£å¸¸çš„æ‰§è¡Œ
 ------------------------------------------------------------------------------------
-ÀàÍ¼:
-¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª
+ç±»å›¾:
+â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
 GameSprite
-¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª
+â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
 image
 rect
 speed
-¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª¡ª
+â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
 __init__(self, image_name, speeed=1):
 update(self):
 ------------------------------------
-ÊôÐÔ:
-- image ¾«ÁéÍ¼Ïñ,Ê¹ÓÃimage_name¼ÓÔØ
-- rect ¾«Áé¾ØÐÎ´óÐ¡,Ä¬ÈÏÊ¹ÓÃÍ¼Ïñ´óÐ¡
-    - image µÄ get_rect()·½·¨,¿ÉÒÔ·µ»Øpygame.Rect(0,0,Í¼Ïñ¿í,Í¼Ïñ¸ß)µÄ¶ÔÏó
-- speed ¾«ÁéµÄÒÆ¶¯ËÙ¶È,Ä¬ÈÏÖµÎª 1
-·½·¨:
-- update Ã¿´Î¸üÐÂÆÁÄ»Ê±ÔÚÓÎÏ·Ñ­»·ÄÚµ÷ÓÃ
-    - ÈÃ¾«ÁéµÄ self.rect.y += self.speed ,ÈÃ¾«ÁéÔÚyÖá·½ÏòÔË¶¯
+å±žæ€§:
+- image ç²¾çµå›¾åƒ,ä½¿ç”¨image_nameåŠ è½½
+- rect ç²¾çµçŸ©å½¢å¤§å°,é»˜è®¤ä½¿ç”¨å›¾åƒå¤§å°
+    - image çš„ get_rect()æ–¹æ³•,å¯ä»¥è¿”å›žpygame.Rect(0,0,å›¾åƒå®½,å›¾åƒé«˜)çš„å¯¹è±¡
+- speed ç²¾çµçš„ç§»åŠ¨é€Ÿåº¦,é»˜è®¤å€¼ä¸º 1
+æ–¹æ³•:
+- update æ¯æ¬¡æ›´æ–°å±å¹•æ—¶åœ¨æ¸¸æˆå¾ªçŽ¯å†…è°ƒç”¨
+    - è®©ç²¾çµçš„ self.rect.y += self.speed ,è®©ç²¾çµåœ¨yè½´æ–¹å‘è¿åŠ¨
 """
