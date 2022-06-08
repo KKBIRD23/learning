@@ -57,10 +57,15 @@ while True:
     clock.tick(60)
 
     # 捕获事件
-    event_list = pygame.event.get()
-    # 为了避免记录空的动作,使用len判断列表长度
-    if len(event_list) > 0:
-        print(event_list)
+    for event in pygame.event.get():
+        # 判断事件类型是否是退出事件
+        if event.type == pygame.QUIT:
+            print("游戏退出...")
+            # 调用quit方法卸载所有模块
+            pygame.quit()
+            # 调用内置函数exit()退出所有程序
+            exit()
+
 
     # 2. 修改飞机的位置
     hero_rect.y -= 1
