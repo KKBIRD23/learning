@@ -16,4 +16,13 @@ speed
 ————————————————————————————————————
 __init__(self, image_name, speeed=1):
 update(self):
+------------------------------------
+属性:
+- image 精灵图像,使用image_name加载
+- rect 精灵矩形大小,默认使用图像大小
+    - image 的 get_rect()方法,可以返回pygame.Rect(0,0,图像宽,图像高)的对象
+- speed 精灵的移动速度,默认值为 1
+方法:
+- update 每次更新屏幕时在游戏循环内调用
+    - 让精灵的 self.rect.y += self.speed ,让精灵在y轴方向运动
 """
