@@ -32,6 +32,7 @@ y<=0 将英雄移动到屏幕底部
 """
 
 import pygame
+from plane_sprites import *
 
 pygame.init()
 
@@ -63,6 +64,12 @@ clock = pygame.time.Clock()
 hero_rect = pygame.Rect(150, 300, 102, 126)
 print(f'这里是hero_rect的值 {hero_rect}')
 
+# 创建敌机的精灵
+enemy = GameSprite("./images/enemy1.png")
+enemy1 = GameSprite("./images/enemy1.png", 2)
+# 创建敌机精灵组
+enemy_group = pygame.sprite.Group(enemy, enemy1)
+
 # 这个循环在游戏中叫做"游戏循环",当代码执行到这里才意味着游戏的开始
 while True:
     # 调用时钟对象的tick方法,设置刷新频率——帧率,为60次/秒
@@ -88,6 +95,12 @@ while True:
     # 如果不重新绘制背景,会留下飞机残影,所以画飞机之前要先重新绘制背景
     screen.blit(bg, (0, 0))
     screen.blit(hero, hero_rect)
+
+    # 让精灵组调用两个方法
+    # update
+    enemy_group.update()
+    # draw
+    enemy_group.draw(screen)
 
     # 4. 调用update方法刷新显示
     pygame.display.update()
