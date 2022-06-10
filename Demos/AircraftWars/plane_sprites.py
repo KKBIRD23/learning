@@ -15,7 +15,7 @@ kill(): 从所有组中删除
 
 pygame.sprite.Group类图
 ————————————————————————————————————
-__init_(self, *精灵):
+__init__(self, *精灵):
 add(*sprites): 向组中增加精灵
 sprites(): 返回所有精灵列表
 update(*args): 染组中所有精灵调用 update 方法
