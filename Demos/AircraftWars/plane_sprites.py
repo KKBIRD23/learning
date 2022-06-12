@@ -56,6 +56,7 @@ SCREEN_RECT = pygame.Rect(0, 0, 480, 700)
 FRAME_PER_SEC = 60
 
 
+# 游戏精灵类
 class GameSprite(pygame.sprite.Sprite):
     """游戏精灵"""
 
@@ -70,3 +71,15 @@ class GameSprite(pygame.sprite.Sprite):
     # update方法,让敌人的小灰机在y轴上向下移动
     def update(self):
         self.rect.y += self.speed
+
+
+# 背景图像类
+class Background(GameSprite):
+
+    def update(self):
+
+        # 1. 调用父类的方法实现
+        super().update()
+        # 2. 判断是否移出屏幕,如果移除屏幕,则将图像设置到屏幕上方
+        if self.rect.y >= SCREEN_RECT.height:
+            self.rect.y = -self.rect.height
