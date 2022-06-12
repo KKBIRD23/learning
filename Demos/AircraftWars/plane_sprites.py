@@ -53,6 +53,7 @@ import pygame
 
 class GameSprite(pygame.sprite.Sprite):
     """游戏精灵"""
+
     def __init__(self, image_name, speed=1):
         # super()父类的初始化方法
         super().__init__()
