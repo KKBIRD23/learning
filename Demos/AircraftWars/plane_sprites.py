@@ -50,6 +50,11 @@ update(self):
 
 import pygame
 
+# 定义屏幕大小的常量
+SCREEN_RECT = pygame.Rect(0, 0, 480, 700)
+# 刷新帧率
+FRAME_PER_SEC = 60
+
 
 class GameSprite(pygame.sprite.Sprite):
     """游戏精灵"""

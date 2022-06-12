@@ -25,12 +25,6 @@ import pygame
 from plane_sprites import *
 
 
-# 定义屏幕大小的常量
-SCREEN_RECT = pygame.Rect(0, 0, 480, 700)
-# 刷新帧率
-FRAME_PER_SEC = 60
-
-
 class PlaneGame(object):
     """飞机大战主游戏"""
 
