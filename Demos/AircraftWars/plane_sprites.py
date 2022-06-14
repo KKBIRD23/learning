@@ -76,8 +76,15 @@ class GameSprite(pygame.sprite.Sprite):
 # 背景图像类
 class Background(GameSprite):
 
-    def update(self):
+    def __init__(self, is_alt=False):
+        # 1. 调用父类方法实现精灵的创建(image/rect/speed)
+        super().__init__("./images/background.png")
 
+        # 2. 判断是否是交替图像,如果是,需要设置初始位置
+        if is_alt:
+            self.rect.y = -self.rect.height
+
+    def update(self):
         # 1. 调用父类的方法实现
         super().update()
         # 2. 判断是否移出屏幕,如果移除屏幕,则将图像设置到屏幕上方

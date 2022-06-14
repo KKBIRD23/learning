@@ -39,7 +39,11 @@ class PlaneGame(object):
         self.__create_sprites()
 
     def __create_sprites(self):
-        pass
+        # 创建背景精灵和精灵组
+        bg1 = Background()
+        bg2 = Background(True)
+
+        self.back_group = pygame.sprite.Group(bg1, bg2)
 
     def start_game(self):
         print("游戏开始...")
@@ -67,7 +71,8 @@ class PlaneGame(object):
 
     # 更新/绘制精灵组
     def __update_sprites(self):
-        pass
+        self.back_group.update()
+        self.back_group.draw(self.screen)
 
     # 退出游戏,这是个静态方法
     @staticmethod
