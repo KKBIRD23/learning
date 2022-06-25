@@ -98,6 +98,7 @@ class Background(GameSprite):
 # 敌机类
 class Enemy(GameSprite):
     """敌机精灵"""
+
     def __init__(self):
         # 1. 调用父类方法,创建敌机精灵,同时指定敌机图片
         super().__init__("./images/enemy1.png")
@@ -114,5 +115,17 @@ class Enemy(GameSprite):
         super().update()
         # 2. 判断是否飞出屏幕,飞出则删除敌机
         if self.rect.y >= SCREEN_RECT.height:
-            print("飞出屏幕,删除该敌机...")
+            # print("飞出屏幕,删除该敌机...")
             self.kill()
+
+
+# 英雄类
+class Hero(GameSprite):
+    """英雄精灵"""
+
+    def __init__(self):
+        # 1. 调用父类方法,设置image&speed
+        super().__init__("./images/me1.png", 0)
+        # 2. 设置英雄的初始位置
+        self.rect.centerx = SCREEN_RECT.centerx
+        self.rect.bottom = SCREEN_RECT.bottom - 120

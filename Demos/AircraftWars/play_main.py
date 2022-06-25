@@ -50,6 +50,10 @@ class PlaneGame(object):
         # 创建敌机的精灵组
         self.enemy_group = pygame.sprite.Group()
 
+        # 创建英雄的精灵和精灵组
+        self.hero = Hero()
+        self.hero_group = pygame.sprite.Group(self.hero)
+
     def start_game(self):
         print("游戏开始...")
 
@@ -87,6 +91,9 @@ class PlaneGame(object):
 
         self.enemy_group.update()
         self.enemy_group.draw(self.screen)
+
+        self.hero_group.update()
+        self.hero_group.draw(self.screen)
 
     # 退出游戏,这是个静态方法
     @staticmethod
