@@ -74,11 +74,29 @@ class PlaneGame(object):
             if event.type == pygame.QUIT:
                 PlaneGame.__game_over()
             elif event.type == CREATE_ENEMY_EVENT:
-                print("敌机出场...")
+                # print("敌机出场...")
                 # 创建敌机精灵
                 enemy = Enemy()
                 # 将敌机精灵添加到敌机精灵组
                 self.enemy_group.add(enemy)
+            # 事件监听的方式是无法搞定按住不放的情况的
+            # elif event.type == pygame.KEYDOWN and event.key == pygame.K_RIGHT:
+            #     print("向右移动...")
+
+        # 使用键盘提供的方法获取键盘按键——按键元组
+        keys_pressed = pygame.key.get_pressed()
+        # 判断元组中对应的按键索引值 1
+        if keys_pressed[pygame.K_RIGHT]:
+            self.hero.speed_x = 2
+        elif keys_pressed[pygame.K_LEFT]:
+            self.hero.speed_x = -2
+        elif keys_pressed[pygame.K_UP]:
+            self.hero.speed_y = -2
+        elif keys_pressed[pygame.K_DOWN]:
+            self.hero.speed_y = 2
+        else:
+            self.hero.speed_x = 0
+            self.hero.speed_y = 0
 
     # 碰撞检测
     def __check_collide(self):

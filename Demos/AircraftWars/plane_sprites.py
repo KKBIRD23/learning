@@ -123,9 +123,17 @@ class Enemy(GameSprite):
 class Hero(GameSprite):
     """英雄精灵"""
 
-    def __init__(self):
+    def __init__(self, speed_x=0, speed_y=0):
         # 1. 调用父类方法,设置image&speed
         super().__init__("./images/me1.png", 0)
         # 2. 设置英雄的初始位置
         self.rect.centerx = SCREEN_RECT.centerx
         self.rect.bottom = SCREEN_RECT.bottom - 120
+        self.speed_x = speed_x
+        self.speed_y = speed_y
+
+    def update(self):
+        # 英雄在水平方向上的移动
+        self.rect.x += self.speed_x
+        # 英雄在垂直方向上的移动
+        self.rect.y += self.speed_y
