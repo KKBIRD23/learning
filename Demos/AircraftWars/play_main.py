@@ -28,6 +28,7 @@ from plane_sprites import *
 class PlaneGame(object):
     """飞机大战主游戏"""
 
+    # 初始化方法
     def __init__(self):
         print("游戏初始化")
 
@@ -42,6 +43,7 @@ class PlaneGame(object):
         # 5. 设置定时器事件——英雄发射子弹 0.5s
         pygame.time.set_timer(HERO_FIRE_EVENT, 500)
 
+    # 创建精灵和精灵组
     def __create_sprites(self):
         # 创建背景精灵和精灵组
         bg1 = Background()
@@ -56,17 +58,20 @@ class PlaneGame(object):
         self.hero = Hero()
         self.hero_group = pygame.sprite.Group(self.hero)
 
+    # 开始游戏
     def start_game(self):
         print("游戏开始...")
-
+        # 游戏循环
         while True:
             # 1. 设置刷新率
             self.clock.tick(FRAME_PER_SEC)
             # 2. 进行事件监听
             self.__event_handler()
-            # 3. 更新/绘制精灵组
+            # 3. 碰撞检测
+            self.__check_collide()
+            # 4. 更新/绘制精灵组
             self.__update_sprites()
-            # 4. 更新显示
+            # 5. 更新显示
             pygame.display.update()
 
     # 事件监听
@@ -103,8 +108,30 @@ class PlaneGame(object):
             self.hero.speed_y = 0
 
     # 碰撞检测
+    """
+    碰撞的实现方法
+    pygame.sprite.groupcollide() —— 两个精灵组中所有精灵的碰撞检测
+    groupcollide(group1,group2,dokill1,dokill2,collided=None) -> Sprite_dict
+    dokill1和dokill2是布尔值,dokill1是针对group1的操作,dokill2是针对group2的操作
+    collided参数用户计算碰撞的回调函数,如果没有指定,则每个精灵必须有一个rect属性
+    
+    pygame.sprite.spritecollide() —— 某个精灵和指定精灵组中的精灵的碰撞
+    spritecollide(sprite,group,dokill,collided=None) -> Sprite_list
+    这里的dokill是针对group的,Sprite_list记录碰撞发生时敌机精灵组敌机的列表
+    """
     def __check_collide(self):
-        pass
+        # 1. 子弹摧毁敌机
+        pygame.sprite.groupcollide(self.hero.bullets, self.enemy_group, True, True)
+
+        # 2. 敌机撞毁英雄
+        # 用一个列表变量接收spritecollide方法的返回值
+        enemise = pygame.sprite.spritecollide(self.hero, self.enemy_group, True)
+        # 判断列表有内容时
+        if len(enemise) > 0:
+            # 干掉英雄
+            self.hero.kill()
+            # 结束游戏
+            PlaneGame.__game_over()
 
     # 更新/绘制精灵组
     def __update_sprites(self):
