@@ -39,6 +39,8 @@ class PlaneGame(object):
         self.__create_sprites()
         # 4. 设置定时器事件——创建敌机 1s
         pygame.time.set_timer(CREATE_ENEMY_EVENT, 1000)
+        # 5. 设置定时器事件——英雄发射子弹 0.5s
+        pygame.time.set_timer(HERO_FIRE_EVENT, 500)
 
     def __create_sprites(self):
         # 创建背景精灵和精灵组
@@ -82,6 +84,8 @@ class PlaneGame(object):
             # 事件监听的方式是无法搞定按住不放的情况的
             # elif event.type == pygame.KEYDOWN and event.key == pygame.K_RIGHT:
             #     print("向右移动...")
+            elif event.type == HERO_FIRE_EVENT:
+                self.hero.fire()
 
         # 使用键盘提供的方法获取键盘按键——按键元组
         keys_pressed = pygame.key.get_pressed()
@@ -112,6 +116,9 @@ class PlaneGame(object):
 
         self.hero_group.update()
         self.hero_group.draw(self.screen)
+
+        self.hero.bullets.update()
+        self.hero.bullets.draw(self.screen)
 
     # 退出游戏,这是个静态方法
     @staticmethod
