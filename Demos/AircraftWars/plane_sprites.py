@@ -137,3 +137,12 @@ class Hero(GameSprite):
         self.rect.x += self.speed_x
         # 英雄在垂直方向上的移动
         self.rect.y += self.speed_y
+        # 控制英雄不能离开屏幕
+        if self.rect.x < 0:
+            self.rect.x = 0
+        elif self.rect.right > SCREEN_RECT.right:
+            self.rect.right = SCREEN_RECT.right
+        elif self.rect.bottom > SCREEN_RECT.bottom:
+            self.rect.bottom = SCREEN_RECT.bottom
+        elif self.rect.y < 0:
+            self.rect.y = 0
