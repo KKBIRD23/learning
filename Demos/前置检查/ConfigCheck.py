@@ -1,63 +1,61 @@
-#!/usr/bin/env python
-# visit https://tool.lu/pyc/ for more information
-# Version: Python 3.6
-
+# -*- coding: utf-8 -*-
 import os
 import sys
 import paramiko
 
 DIRNAME = os.path.dirname(os.path.realpath(sys.argv[0]))
-ipfile = os.path.join(DIRNAME, 'IP')
-pwfile = os.path.join(DIRNAME, 'PW')
-logfile = os.path.join(DIRNAME, 'CHECKLOG.txt')
-IP_file = open(ipfile, 'r')
-CHECKLOG = open(logfile, 'w')
-for IP in IP_file.readlines():
-    ip = IP.replace('\n', '').replace('\r', '')
-    PW_file = open(pwfile, 'r')
-    for PW in PW_file.readlines():
-        pw = PW.replace('\n', '').replace('\r', '')
-        print(ip, pw)
+ip_file = os.path.join(DIRNAME, "IP")
+pw_file = os.path.join(DIRNAME, "PW")
+log_file = os.path.join(DIRNAME, "CHECKLOG.txt")
+error_file = os.path.join(DIRNAME, "ERRORLOG.txt")
 
+IP_file = open(ip_file, "r")
+PW_file = open(pw_file, "r")
+CHECKLOG = open(log_file, "w")
+ERRORLOG = open(error_file, "w")
+
+count_pw = len(PW_file.readlines())
+
+for IP in IP_file.readlines():
+    ip = IP.replace("\n", "").replace("\r", "")
+
+    for PW in PW_file.readlines():
+        pw = PW.replace("\n", "").replace("\r", "")
+        print(ip, pw)
         try:
             transport = paramiko.Transport((ip, 22))
-        except Exception:
-            e = None
-
-            try:
-                print('\xe8\xbf\x9e\xe6\x8e\xa5\xe4\xb8\x8d\xe9\x80\x9a')
-                CHECKLOG.writelines(ip + ':\xe8\xbf\x9e\xe6\x8e\xa5\xe4\xb8\x8d\xe9\x80\x9a\n')
-            finally:
-                e = None
-                del e
-
+        except Exception as e:
+            print("连接不通")
+            ERRORLOG.writelines(ip + ":连接不通\n")
+            break
         try:
-            transport.connect('root', pw, **('username', 'password'))
-            print('\xe5\xbc\x80\xe5\xa7\x8b\xe6\xa3\x80\xe6\x9f\xa5:' + ip + '\xe7\x9a\x84\xe9\x85\x8d\xe7\xbd\xae:')
-            CHECKLOG.writelines('\xe5\xbc\x80\xe5\xa7\x8b\xe6\xa3\x80\xe6\x9f\xa5:')
-            CHECKLOG.writelines(ip + pw)
-            CHECKLOG.writelines('\xe7\x9a\x84\xe9\x85\x8d\xe7\xbd\xae:\n')
+            # print(pw)
+            transport.connect(username="root", password=pw)
+            print("开始检查:" + ip + "的配置:")
+            CHECKLOG.writelines("开始检查:")
+            CHECKLOG.writelines(ip + "  密码为:" + pw)
+            CHECKLOG.writelines("的配置:\n")
             ssh = paramiko.SSHClient()
             ssh._transport = transport
-            (stdin, stdout, stderr) = ssh.exec_command('cat /root/VFJ/AuthModelFrnt2/config/system.properties')
-            res = stdout.read()
-            err = stderr.read()
+            # 执行命令，不要执行top之类的在不停的刷新的命令
+            stdin, stdout, stderr = ssh.exec_command("cat /root/VFJ/AuthModelFrnt2/config/system.properties")
+            # 获取命令结果
+            res, err = stdout.read(), stderr.read()
             result = res if res else err
             CHECKLOG.write(result.decode())
-            CHECKLOG.write('\n--------------------------------------------------------------')
-        continue
-        except Exception:
-        e = None
-
-        try:
-            print('\xe5\xaf\x86\xe7\xa0\x81\xe4\xb8\x8d\xe6\xad\xa3\xe7\xa1\xae')
-            CHECKLOG.writelines(ip)
-            CHECKLOG.writelines(':\xe5\xaf\x86\xe7\xa0\x81\xe4\xb8\x8d\xe6\xad\xa3\xe7\xa1\xae:')
-            CHECKLOG.writelines(pw + '\n')
-        finally:
-            e = None
-            del e
-
-        continue
-
+            CHECKLOG.write("\n--------------------------------------------------------------\n")
+            break
+        # except paramiko.ssh_exception.AuthenticationException as e:
+        except Exception as e:
+            print("密码不正确")
+            if (count_pw := (count_pw - 1)) == 0:
+                ERRORLOG.writelines(f'{ip}'":密码不能在密码表中找到\n")
+            # CHECKLOG.writelines(ip)
+            # CHECKLOG.writelines(":密码不正确:")
+            # CHECKLOG.writelines(pw + "\n")
+            # CHECKLOG.write(str(e))
 CHECKLOG.close()
+ERRORLOG.close()
+IP_file.close()
+PW_file.close()
+
