@@ -35,11 +35,10 @@ for IP in IP_file.readlines():
             # print(pw)
             transport.connect(username="root", password=pw)
             print("开始检查:" + ip + "的配置:")
-            # CHECKLOG.writelines("开始检查:")
-            # CHECKLOG.writelines(ip + pw)
-            # CHECKLOG.writelines("的配置:\n")
+
             ssh = paramiko.SSHClient()
             ssh._transport = transport
+
             # 执行命令，不要执行top之类的在不停的刷新的命令
             stdin, stdout, stderr = ssh.exec_command("cat /root/VFJ/AuthModelFrnt2/config/system.properties")
             # 获取命令结果
