@@ -1,8 +1,125 @@
-import sys
+# -*- coding: utf-8 -*-
+"""
+需求:
+1、 创建检查类
+    - 测试连接、取配置
+2、 地址及密码管理类
+    - 从文件取IP和密码
+    - 把因为超连接次数的IP放到临时列表
+    - 把放到临时列表的IP剩下的未尝试密码放到单独的列表
+——————————————————————————————————————————————————————
+Check
+
+"""
+
 import os
+import paramiko
 
-IP_PATH = os.path.join(os.getcwd(), "IP")
-PW_PATH = os.path.join(os.getcwd(), "PW")
+# import retrying
 
-print(IP_PATH)
-print(PW_PATH)
+# 定义两个常量放文件名字,方便以后修改
+PW_FILE_NAME = "PW"
+IP_FILE_NAME = "IP"
+
+
+class Check(object):
+    """配置检查"""
+
+    # 鲁迅先生说过,能够with open就不要open,毕竟谁也说不准就忘记close——比如阿辉的代码,所以这里不选open
+    def __init__(self):
+        # 初始化方法把要操作的文件搞好
+        self.ip_file_path = os.path.join(os.getcwd(), IP_FILE_NAME)
+        self.pw_file_path = os.path.join(os.getcwd(), PW_FILE_NAME)
+        self.er_file_path = os.path.join(os.getcwd(), "error_log.txt")
+        self.ck_file_path = os.path.join(os.getcwd(), "check_log.txt")
+        self.ip = ""
+        self.pw = ""
+
+    # 定义实例方法,管理用户名密码
+    def pw_ip_manage(self):
+        with open(self.ip_file_path, "r") as ip_file:
+            ip_list = ip_file.readlines()
+            for ip in ip_list:
+                ip = ip.strip("\n")
+                if ip == "\n":
+                    print("谁他妈加的空行？坑爹呢！！！")
+                else:
+                    with open(self.pw_file_path, "r") as pw_file:
+                        pw_file = pw_file.readlines()
+                        for pw in pw_file:
+                            pw = pw.strip("\n")
+                            if pw == "\n":
+                                print("谁他妈加的空行？坑爹呢！！！")
+                            else:
+                                self.ip = ip
+                                self.pw = pw
+                                self.check_server()
+
+    def check_server(self):
+        # 这里算下密码个数,以后用得到
+        with open(self.pw_file_path, "r") as pw_file:
+            count_pw = len(pw_file.readlines())
+
+        try:
+            # 实例化一个transport对象并测试通道
+            transport = paramiko.Transport((self.ip, 22))
+        except Exception as ex:
+            print(ex)
+            print(f'{self.ip} 的连接不通,请核对省门架表变更或通知机电')
+            # 报错就是连不通,写到错误记录
+            with open(self.er_file_path, "a") as error_file:
+                error_file.writelines(f'{self.ip} 的连接不通,请核对省门架表变更或通知机电\n')
+                error_file.writelines("-" * 50 + "\n")
+            break
+
+        try:
+            # 创建连接
+            transport.connect(username="root", password=self.pw)
+            print(f'开始检查:" + {self.ip} + "的配置:')
+            # 创建SSH对象
+            ssh = paramiko.SSHClient
+            # 将sshclient的对象的私有_transport指定为以上的transport
+            ssh._transport = transport
+            # 打开一个Channel并执行命令
+            stdin, stdout, stderr = ssh.exec_command("cat /root/VFJ/AuthModelFrnt2/config/system.properties")
+            # 获取命令结果
+            res, err = stdout.read().decode(), stderr.read().decode()
+            result = res if res else err
+            print(result)
+
+            # 看看服务器是不是傻逼偷偷被重装了
+            if "No such file or directory" in result:
+                print("妈的又偷偷重装老子的机！")
+                with open(self.er_file_path, "a") as error_file:
+                    error_file.writelines(f'妈的又偷偷重装老子的机！ {ip} 要重新部署！\n')
+                    error_file.writelines("\n--------------------------------------------------------------\n")
+
+            # 啥事都没有的话,就默默把配置拉到日志中
+            with open(self.ck_file_path, "a") as check_file:
+                check_file.writelines(f'开始检查 {ip} 的配置,密码为: {self.pw_ip_dict[ip]}\n')
+                check_file.writelines("-------------------------")
+                check_file.writelines(result)
+                check_file.writelines("\n--------------------------------------------------------------\n")
+
+            transport.close()
+
+        except Exception as ex:
+            if str(ex) == 'Authentication failed.':
+                print("一个不对再换一个,怼死为止~~")
+                if (count_pw := (count_pw - 1)) == 0:
+                    with open(self.er_file_path, "a") as error_file:
+                        print("密码错完了,内心开始骂娘了……")
+                        error_file.writelines(f' {ip} 密码不能在密码表中找到\n')
+                        check_file.writelines("\n--------------------------------------------------------------\n")
+
+            else:
+                with open(self.er_file_path, "a") as error_file:
+                    print("我也不知道这是什么错误,写一笔再说……")
+                    error_file.writelines(f'我也不知道这是什么错误,写一笔再说……\n')
+                    check_file.writelines("\n--------------------------------------------------------------\n")
+
+
+if __name__ == '__main__':
+    check = Check()
+    check.pw_ip_manage()
+    check.check_server()
