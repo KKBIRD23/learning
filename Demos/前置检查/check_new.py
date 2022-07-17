@@ -37,9 +37,7 @@ class Check(object):
 
     # 定义实例方法,管理用户名密码
     def start_check(self):
-        # 这里算下密码个数,以后用得到
-        with open(self.pw_file_path, "r") as pw_file:
-            count_pw = len(pw_file.readlines())
+
         with open(self.ip_file_path, "r") as ip_file:
             ip_list = ip_file.readlines()
             for ip in ip_list:
@@ -47,6 +45,10 @@ class Check(object):
                 if ip == "\n":
                     print("谁他妈加的空行？坑爹呢！！！")
                 else:
+                    # 这里算下密码个数,以后用得到
+                    with open(self.pw_file_path, "r") as pw_file:
+                        count_pw = len(pw_file.readlines())
+                    # 这里读密码开始搞了
                     with open(self.pw_file_path, "r") as pw_file:
                         pw_file = pw_file.readlines()
                         for pw in pw_file:
@@ -59,10 +61,8 @@ class Check(object):
 
                                 if self.check_server() == 1:
                                     break
-                                else:
-                                    self.check_server()
 
-                                if (count_pw - 1) == 0:
+                                if (count_pw := (count_pw - 1)) == 0:
                                     with open(self.er_file_path, "a") as error_file:
                                         print(f'{self.ip} 密码错完了,内心开始骂娘了……')
                                         error_file.writelines(f' {self.ip} 密码错完了,内心开始骂娘了……\n')
@@ -76,11 +76,19 @@ class Check(object):
 
         except Exception as ex:
             print(ex)
-            print(f'{self.ip} 的连接不通,请核对省门架表变更或通知机电')
-            # 报错就是连不通,写到错误记录
-            with open(self.er_file_path, "a") as error_file:
-                error_file.writelines(f'{self.ip} 的连接不通,请核对省门架表变更或通知机电\n')
-                error_file.writelines("-" * 50 + "\n")
+            if str(ex) in 'Error reading SSH protocol banner[WinError 10054] 远程主机强迫关闭了一个现有的连接':
+                print(f'{self.ip}::: 这个沙比拒绝我,打电话日决他！！！')
+                with open(self.er_file_path, "a") as error_file:
+                    error_file.writelines(f'{self.ip} 这个沙比拒绝我,打电话日决他！(人在屋檐下，顺便问密码...)\n')
+                    error_file.writelines("-" * 50 + "\n")
+                    return 1
+            else:
+                # 报错就是连不通,写到错误记录
+                print(f'{self.ip} 的连接不通,请核对省门架表变更或通知机电')
+                with open(self.er_file_path, "a") as error_file:
+                    error_file.writelines(f'{self.ip} 的连接不通,请核对省门架表变更或通知机电\n')
+                    error_file.writelines("-" * 50 + "\n")
+                    return 1
 
         else:
             try:
@@ -123,7 +131,7 @@ class Check(object):
                     with open(self.er_file_path, "a") as error_file:
                         print(ex)
                         print("我也不知道这是什么错误,写一笔再说……")
-                        error_file.writelines(f'我也不知道这是什么错误,写一笔再说……\n')
+                        error_file.writelines(f'我也不知道这是什么错误,写一笔再说……\n{ex}\n')
                         error_file.writelines("-" * 50 + "\n")
             finally:
                 transport.close()
