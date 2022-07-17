@@ -31,6 +31,7 @@ class Check(object):
         self.pw_file_path = os.path.join(os.getcwd(), PW_FILE_NAME)
         self.er_file_path = os.path.join(os.getcwd(), "error_log.txt")
         self.ck_file_path = os.path.join(os.getcwd(), "check_log.txt")
+        self.pw_dict_path = os.path.join(os.getcwd(), "password_dict.txt")
         self.ip = ""
         self.pw = ""
 
@@ -55,15 +56,17 @@ class Check(object):
                             else:
                                 self.ip = ip
                                 self.pw = pw
-                                self.check_server()
+
                                 if self.check_server() == 1:
                                     break
+                                else:
+                                    self.check_server()
+
                                 if (count_pw - 1) == 0:
                                     with open(self.er_file_path, "a") as error_file:
                                         print(f'{self.ip} 密码错完了,内心开始骂娘了……')
                                         error_file.writelines(f' {self.ip} 密码错完了,内心开始骂娘了……\n')
-                                        error_file.writelines(
-                                            "\n--------------------------------------------------------------\n")
+                                        error_file.writelines("-" * 50 + "\n")
 
     def check_server(self):
         try:
@@ -100,15 +103,16 @@ class Check(object):
                     print("妈的又偷偷重装老子的机！\n")
                     with open(self.er_file_path, "a") as error_file:
                         error_file.writelines(f'妈的又偷偷重装老子的机！ {self.ip} 要重新部署！\n')
-                        error_file.writelines("\n--------------------------------------------------------------\n")
+                        error_file.writelines("-" * 50 + "\n")
                         return 1
 
                 # 啥事都没有的话,就默默把配置拉到日志中
                 with open(self.ck_file_path, "a") as check_file:
-                    check_file.writelines(f'开始检查 {self.ip} 的配置,密码为: {self.pw}\n')
-                    check_file.writelines("-------------------------")
-                    check_file.writelines(result)
-                    check_file.writelines("\n--------------------------------------------------------------\n")
+                    check_file.writelines(f'开始检查 {self.ip} 的配置\n')
+                    check_file.writelines(f'{result}\n')
+                    check_file.writelines("=" * 80 + "\n\n")
+                with open(self.pw_dict_path, "a") as pw_dict:
+                    pw_dict.writelines(f'{self.ip}::::{self.pw}\n')
                     return 1
 
             except Exception as ex:
@@ -120,7 +124,7 @@ class Check(object):
                         print(ex)
                         print("我也不知道这是什么错误,写一笔再说……")
                         error_file.writelines(f'我也不知道这是什么错误,写一笔再说……\n')
-                        error_file.writelines("\n--------------------------------------------------------------\n")
+                        error_file.writelines("-" * 50 + "\n")
             finally:
                 transport.close()
 
