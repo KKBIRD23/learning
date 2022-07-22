@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-需求:
-1、 创建检查类
-    - 测试连接、取配置
+说明:
+1、 如果IP比较多就用IP、PW文件放，如果不配置文件就输入IP和密码
 2、 地址及密码管理类
     - 从文件取IP和密码
     - 把因为超连接次数的IP放到临时列表
@@ -11,8 +10,6 @@
 
 import os
 import paramiko
-
-# import retrying
 
 
 # 定义几个常量放文件名字和命令,方便以后修改
@@ -38,35 +35,42 @@ class Check(object):
     # 定义实例方法,管理用户名密码
     def start_check(self):
 
-        with open(self.ip_file_path, "r") as ip_file:
-            ip_list = ip_file.readlines()
-            for ip in ip_list:
-                ip = ip.strip("\n")
-                if ip == "\n":
-                    print("谁他妈加的空行？坑爹呢！！！")
-                else:
-                    # 这里算下密码个数,以后用得到
-                    with open(self.pw_file_path, "r") as pw_file:
-                        count_pw = len(pw_file.readlines())
-                    # 这里读密码开始搞了
-                    with open(self.pw_file_path, "r") as pw_file:
-                        pw_file = pw_file.readlines()
-                        for pw in pw_file:
-                            pw = pw.strip("\n")
-                            if pw == "\n":
-                                print("谁他妈加的空行？坑爹呢！！！")
-                            else:
-                                self.ip = ip
-                                self.pw = pw
+        # 能读IP和PW文件就读，不能读就获取输入
+        try:
+            with open(self.ip_file_path, "r") as ip_file:
+                ip_list = ip_file.readlines()
+                for ip in ip_list:
+                    ip = ip.strip("\n")
+                    if ip == "\n":
+                        print("谁他妈加的空行？坑爹呢！！！")
+                    else:
+                        # 这里算下密码个数,以后用得到
+                        with open(self.pw_file_path, "r") as pw_file:
+                            count_pw = len(pw_file.readlines())
+                        # 这里读密码开始搞了
+                        with open(self.pw_file_path, "r") as pw_file:
+                            pw_file = pw_file.readlines()
+                            for pw in pw_file:
+                                pw = pw.strip("\n")
+                                if pw == "\n":
+                                    print("谁他妈加的空行？坑爹呢！！！")
+                                else:
+                                    self.ip = ip
+                                    self.pw = pw
 
                                 if self.check_server() == 1:
                                     break
-
                                 if (count_pw := (count_pw - 1)) == 0:
                                     with open(self.er_file_path, "a") as error_file:
                                         print(f'{self.ip} 密码错完了,内心开始骂娘了……')
                                         error_file.writelines(f' {self.ip} 密码错完了,内心开始骂娘了……\n')
                                         error_file.writelines("-" * 50 + "\n")
+        except Exception as ex:
+            print(ex)
+            self.ip = str(input("输入要检测的服务器IP："))
+            self.pw = str(input("输入要检测的服务器密码："))
+
+            self.check_server()
 
     def check_server(self):
         try:
@@ -130,8 +134,8 @@ class Check(object):
                 else:
                     with open(self.er_file_path, "a") as error_file:
                         print(ex)
-                        print("我也不知道这是什么错误,写一笔再说……")
-                        error_file.writelines(f'我也不知道这是什么错误,写一笔再说……\n{ex}\n')
+                        print(f'{self.ip} 这个我也不知道这是什么错误,写一笔再说……')
+                        error_file.writelines(f'{self.ip} 这个我也不知道这是什么错误,写一笔再说……\n{ex}\n')
                         error_file.writelines("-" * 50 + "\n")
             finally:
                 transport.close()
