@@ -44,4 +44,4 @@ class LogMonitoring(object):
 
 
 if __name__ == '__main__':
-    monitor = LogMonitoring("test.log", 1, 1 )
+    monitor = LogMonitoring("test.log", 1, 1)
