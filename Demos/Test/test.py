@@ -19,16 +19,15 @@ Content 短信内容
 </soap:Envelope>
 
 """
-from suds.client import Client
+import zeep
+# from suds import client
 
-# url = "http://10.50.15.9:34005"
-url = "http://www.webxml.com.cn/webservices/qqOnlineWebService.asmx?wsdl"
-headers = {'Content-Type': 'application/soap+xml;charset="UTF-8"'}
+wsdl = "http://10.50.15.9:34005"
 
-params_dict = {"PhoneNo": "18983884801", "Content": "testmsg"}
+client = zeep.Client("http://10.50.15.9:34005")
+# client = client.Client(wsdl)
 
-client = Client(url, headers=headers, faults=False, timeout=15)
-
-print(client)
-
-# result = client.service.SendSMS(params_dict)
+# msg = {"SendSMSRequest":{"PhoneNo":"18983884801","Content":"test123"}}
+msg = {"PhoneNo": "18983884801", "Content": "test123"}
+print(client.service.SendSMS('msg'))
+# test = client.service.SendSMS(msg)
