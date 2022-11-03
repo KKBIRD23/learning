@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """
 请求地址:http://10.50.14.218:8080/sms/services/MsgService
 或
@@ -20,14 +22,17 @@ Content 短信内容
 
 """
 import zeep
+
 # from suds import client
 
-wsdl = "http://10.50.15.9:34005"
+# wsdl = "http://10.50.15.9:34005"
+wsdl = "http://10.50.14.218:8080/sms/services/MsgService?wsdl"
 
-client = zeep.Client("http://10.50.15.9:34005")
+client = zeep.Client(wsdl)
 # client = client.Client(wsdl)
 
-# msg = {"SendSMSRequest":{"PhoneNo":"18983884801","Content":"test123"}}
 msg = {"PhoneNo": "18983884801", "Content": "test123"}
-print(client.service.SendSMS('msg'))
-# test = client.service.SendSMS(msg)
+# msg = {"PhoneNo": "18983884801", "Content": "test123"}
+
+# print(client.service.doDefine('msg'))
+print(client.service.doTemplate('msg'))

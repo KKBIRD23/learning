@@ -16,7 +16,10 @@ import socket
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 # 传递数据
-
+# udp_socket.sendto(要发送的数据的二进制格式， 对方IP和端口号)
+# 参数一：字符串转二进制格式：字符串.encode()
+# 参数二：对端的IP地址和端口号 格式为元组
+udp_socket.sendto("着是一条测试信息".encode(), ("192.168.1.99", 8888))
 
 # 关闭socket
 udp_socket.close()
