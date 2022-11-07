@@ -35,4 +35,4 @@ msg = {"PhoneNo": "18983884801", "Content": "test123"}
 # msg = {"PhoneNo": "18983884801", "Content": "test123"}
 
 # print(client.service.doDefine('msg'))
-print(client.service.doTemplate('msg'))
+print(client.service.doTemplate("msg"))
