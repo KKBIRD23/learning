@@ -17,6 +17,12 @@ decode进行解码的时候有两个参数可以选择:
 str.decode(encoding="字符集", errors="错误模式")
     - 常用中文字符集如GBK、UTF-8
     - 错误模式有 ignore 忽略错误,和 strict 严格模式.设置为strict的时候,当字符集不对应编码错误,将报错
+---------------------------------
+发送端端口绑定
+可以使用bind方法对 发送端 端口进行绑定,避免端口每次都变化
+bind方法的参数为元组,bind(("IP地址", 端口)) 如 udp_socket.bind(("192.168.0.2", 8080))
+其中IP地址可以为空,表示本机地址 如 udp_socket.bind(("", 8080))
+---------------------------------
 """
 # 1、导入模块
 import socket
@@ -24,14 +30,19 @@ import socket
 # 2、创建套接字
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+# 发送端绑定端口
+udp_socket.bind(("", 8080))
+
 # 3、发送数据
 udp_socket.sendto("test".encode(), ("192.168.1.99", 8888))
 
 # 4、接收数据
 recv_data = udp_socket.recvfrom(1024)
+
 # 5、解码数据得到字符串
 # recv_test = recv_data[0].decode("gbk")
-recv_test = recv_data[0].decode(encoding="UTF8",errors="ignore")    # 虽然字符集不正确,但忽略错误
+recv_test = recv_data[0].decode(encoding="UTF8", errors="ignore")  # 虽然字符集不正确,但忽略错误
+
 # 6、输出显示接收到的内容
 print(recv_data, "\n =======")
 print(recv_data[0], "\n =======")
