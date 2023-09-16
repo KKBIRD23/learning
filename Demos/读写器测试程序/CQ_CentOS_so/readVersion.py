@@ -20,7 +20,9 @@ time.sleep(0.3)
 # 获取读写器版本
 rdversion = create_string_buffer(10 * 3)
 apiversion = create_string_buffer(10 * 3)
-re = library.JT_ReaderVersion(Handle, rdversion, len(rdversion), apiversion, len(apiversion))
+re = library.JT_ReaderVersion(
+    Handle, rdversion, len(rdversion), apiversion, len(apiversion)
+)
 print("读写器版本信息：")
 print(rdversion.value, apiversion.value)
 
@@ -29,18 +31,36 @@ def psamType(psamlenrep, handle, nSockID):
     psamreply = create_string_buffer(256)
     psamlenrep = ctypes.c_int()
     command = b"00A40000023F00"
-    re = library.JT_SamCommand(Handle, nSockID, ctypes.c_char_p(command), len(command), psamreply,
-                               ctypes.byref(psamlenrep))
+    re = library.JT_SamCommand(
+        Handle,
+        nSockID,
+        ctypes.c_char_p(command),
+        len(command),
+        psamreply,
+        ctypes.byref(psamlenrep),
+    )
     # iprint(re)
     # print(psamreply.value)
     command = b"00A40000020015"
-    re = library.JT_SamCommand(Handle, nSockID, ctypes.c_char_p(command), len(command), psamreply,
-                               ctypes.byref(psamlenrep))
+    re = library.JT_SamCommand(
+        Handle,
+        nSockID,
+        ctypes.c_char_p(command),
+        len(command),
+        psamreply,
+        ctypes.byref(psamlenrep),
+    )
     # print(re)
     # print(psamreply.value)
     command = b"00B000000E"
-    re = library.JT_SamCommand(Handle, nSockID, ctypes.c_char_p(command), len(command), psamreply,
-                               ctypes.byref(psamlenrep))
+    re = library.JT_SamCommand(
+        Handle,
+        nSockID,
+        ctypes.c_char_p(command),
+        len(command),
+        psamreply,
+        ctypes.byref(psamlenrep),
+    )
     print(re)
     print(psamreply.value)
     filedate = psamreply.value
