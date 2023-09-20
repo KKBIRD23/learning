@@ -177,6 +177,14 @@ class VFJReader():
     def resetRF(self, nHandle):
         stat = self.readerlibrary.JT_ResetRF(ctypes.c_int(nHandle))
         return stat
+    
+    def selectRWUnit(self, nHandle, Unit):
+        stat = self.readerlibrary.JT_SelectRWUnit(ctypes.c_int(nHandle), ctypes.c_ubyte(Unit))
+        return stat
+    
+    def setScanRWUnits(self, nHandle, Unit):
+        stat = self.readerlibrary.JT_SetScanRWUnits(ctypes.c_int(nHandle), ctypes.c_ubyte(Unit))
+        return stat
 
 
 

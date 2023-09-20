@@ -381,7 +381,7 @@ class Application_ui(Frame):
         self.Label13.place(relx=0.032, rely=0.119, relwidth=0.176, relheight=0.141)
         self.TabStrip1.add(self.TabStrip1__Tab3, text='高级功能')
 
-        self.P0_Check_antenna3Var = IntVar(value=0)
+        self.P0_Check_antenna3Var = IntVar(value=1)
         self.style.configure('TP0_Check_antenna3.TCheckbutton', font=('宋体',9))
         self.P0_Check_antenna3 = Checkbutton(self.Frame4, variable=self.P0_Check_antenna3Var, style='TP0_Check_antenna3.TCheckbutton')
         self.P0_Check_antenna3.setValue = lambda x: self.P0_Check_antenna3Var.set(x)
@@ -395,20 +395,29 @@ class Application_ui(Frame):
         self.P0_Check_antenna2.value = lambda : self.P0_Check_antenna2Var.get()
         self.P0_Check_antenna2.place(relx=0.514, rely=0.198, relwidth=0.082, relheight=0.252)
 
-        self.P0_Check_antenna1Var = IntVar(value=0)
+        self.P0_Check_antenna1Var = IntVar(value=1)
         self.style.configure('TP0_Check_antenna1.TCheckbutton', font=('宋体',9))
         self.P0_Check_antenna1 = Checkbutton(self.Frame4, variable=self.P0_Check_antenna1Var, style='TP0_Check_antenna1.TCheckbutton')
         self.P0_Check_antenna1.setValue = lambda x: self.P0_Check_antenna1Var.set(x)
         self.P0_Check_antenna1.value = lambda : self.P0_Check_antenna1Var.get()
         self.P0_Check_antenna1.place(relx=0.42, rely=0.198, relwidth=0.082, relheight=0.252)
 
-        self.P0_Combo_antennaList = ['1 ','2 ','3 ','4 ','5 ','6 ',]
+        self.P0_Combo_antennaList = ['0 ','1 ','2 ','3 ','4 ','5 ','6 ']
         self.P0_Combo_antennaVar = StringVar(value='1 ')
         self.P0_Combo_antenna = Combobox(self.Frame4, text='1 ', textvariable=self.P0_Combo_antennaVar, values=self.P0_Combo_antennaList, font=('微软雅黑',9))
         self.P0_Combo_antenna.setText = lambda x: self.P0_Combo_antennaVar.set(x)
         self.P0_Combo_antenna.text = lambda : self.P0_Combo_antennaVar.get()
         self.P0_Combo_antenna.place(relx=0.42, rely=0.577, relwidth=0.134)
-
+        
+        
+        self.TP0_Command_SetRWUnitVar = StringVar(value='设置天线')
+        self.style.configure('TP0_Command_SetRWUnit.TButton', font=('微软雅黑',9))
+        self.TP0_Command_SetRWUnit = Button(self.Frame4, text='设置天线', textvariable=self.TP0_Command_SetRWUnitVar, command=self.TP0_Command_SetRWUnit_Cmd, style='TP0_Command_SetRWUnit.TButton.TButton')
+        self.TP0_Command_SetRWUnit.setText = lambda x: self.TP0_Command_SetRWUnit.set(x)
+        self.TP0_Command_SetRWUnit.text = lambda : self.TP0_Command_SetRWUnit.get()
+        self.TP0_Command_SetRWUnit.place(relx=0.609, rely=0.566, relwidth=0.345, relheight=0.363)
+        
+        
         self.Label5Var = StringVar(value='选择读写头：')
         self.style.configure('TLabel5.TLabel', anchor='w', font=('微软雅黑',9))
         self.Label5 = Label(self.Frame4, text='选择读写头：', textvariable=self.Label5Var, style='TLabel5.TLabel')
@@ -510,6 +519,33 @@ class Application(Application_ui):
     def TabStrip1_NotebookTabChanged(self, event):
         #TODO, Please finish the function here!
         pass
+    
+    
+    def TP0_Command_SetRWUnit_Cmd(self, event=None):
+        #TODO, Please finish the function here!
+        if 'vfjreaderexample' in dir(self):
+            unit0 = int(self.P0_Check_antenna1.value())
+            unit1 = int(self.P0_Check_antenna2.value())
+            unit2 = int(self.P0_Check_antenna3.value())
+            unit3 = int(self.P0_Check_antenna4.value())
+            unit4 = int(self.P0_Check_antenna5.value())
+            unit5 = int(self.P0_Check_antenna6.value())
+            unit = int(self.P0_Combo_antenna.text())
+            units = unit0 + unit1*2+ unit2*4 + unit3*8 + unit4*16 + unit5*32
+            if unit != 0 :
+                selectRWUnitstat = self.vfjreaderexample.selectRWUnit(self.Handle, unit)
+                if selectRWUnitstat == 0:
+                    self.P0_Text_Msg.insert("end","设置读写器%d号口天线成功\n" %(unit))
+                else:
+                    self.P0_Text_Msg.insert("end","设置读写器%d号口天线失败，状态码：%d\n" %(unit, selectRWUnitstat))
+            else:
+                SetScanRWUnitsstat = self.vfjreaderexample.setScanRWUnits(self.Handle, units)
+                if SetScanRWUnitsstat == 0:
+                   self.P0_Text_Msg.insert("end","设置读写器轮询模式成功，模式：%d,%d,%d,%d,%d,%d\n" %(unit0,unit1,unit2,unit3,unit4,unit5))
+                else:
+                   self.P0_Text_Msg.insert("end","设置读写器轮询模式失败，状态码：%d\n" %(SetScanRWUnitsstat)) 
+        else:
+             self.P0_Text_Msg.insert("end", "读写器未打开"+"\n")
 
     def P1_Command_Diode_Cmd(self, event=None):
         if 'vfjreaderexample' in dir(self):
@@ -711,7 +747,6 @@ class Application(Application_ui):
            self.P0_Text_Msg.insert("end", "读写器未打开"+"\n")
 
     def P3_Command_StopTest_Cmd(self, event=None):
-        #TODO, Please finish the function here!
         if 'vfjreaderexample' in dir(self):
             if self.i != 0:
                 self.lock = True
@@ -724,7 +759,6 @@ class Application(Application_ui):
 
 
     def P3_Command_StartTest_Cmd(self, event=None):
-        #TODO, Please finish the function here!
         if 'vfjreaderexample' in dir(self):
             if self.P3_Text_TestTimes.get().isdigit() and self.P3_Text_TestTotal.get().isdigit() and self.P3_Text_Tested.get().isdigit() and self.P3_Text_ReadTimer.get().isdigit():
                 n = int(self.P3_Text_TestTimes.get())
@@ -734,7 +768,7 @@ class Application(Application_ui):
                 self.lock = False
                 cardplace = ctypes.c_int()
                 cardsn = ctypes.create_string_buffer(8)
-                command = b'00A4000002DF01'
+                command = b'00A40000023F00'
                 self.i = 0
                 self.success = 0
                 self.failure = 0
