@@ -938,12 +938,12 @@ class Application_ui(Frame):
         # 在P0_Text_Msg上增加一个滚动条，并启用文本框的自动滚动
         self.VScroll1 = Scrollbar(self.Frame3, orient="vertical")
         self.VScroll1.place(relx=0.968, rely=0.0, relwidth=0.032, relheight=1.0)
-        self.P0_Text_Msg["yscrollcommand"] = self.VScroll1.set
         # 将VScroll1与P0_Text_Msg进行关联
         self.VScroll1["command"] = self.P0_Text_Msg.yview
         self.P0_Text_Msg.configure(yscrollcommand=self.VScroll1.set)
         self.P0_Text_Msg.configure(wrap=WORD)
         # 使用insert方法将一行文本插入到文本框的末尾，并使用see方法将滚动条滚动到最后一行
+        self.P0_Text_Msg["yscrollcommand"] = self.VScroll1.set
         self.P0_Text_Msg.insert("1.0", "")
         self.P0_Text_Msg.see("end")
 
@@ -972,10 +972,12 @@ class Application(Application_ui):
                 selectRWUnitstat = self.vfjreaderexample.selectRWUnit(self.Handle, unit)
                 if selectRWUnitstat == 0:
                     self.P0_Text_Msg.insert("end", "设置读写器%d号口天线成功\n" % (unit))
+                    self.P0_Text_Msg.see("end")
                 else:
                     self.P0_Text_Msg.insert(
                         "end", "设置读写器%d号口天线失败，状态码：%d\n" % (unit, selectRWUnitstat)
                     )
+                    self.P0_Text_Msg.see("end")
             else:
                 SetScanRWUnitsstat = self.vfjreaderexample.setScanRWUnits(
                     self.Handle, units
@@ -986,12 +988,15 @@ class Application(Application_ui):
                         "设置读写器轮询模式成功，模式：%d,%d,%d,%d,%d,%d\n"
                         % (unit0, unit1, unit2, unit3, unit4, unit5),
                     )
+                    self.P0_Text_Msg.see("end")
                 else:
                     self.P0_Text_Msg.insert(
                         "end", "设置读写器轮询模式失败，状态码：%d\n" % (SetScanRWUnitsstat)
                     )
+                    self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P1_Command_Diode_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1007,6 +1012,7 @@ class Application(Application_ui):
                     self.vfjreaderexample.leddisplay(self.Handle, R, G, Y)
                 )
                 self.P0_Text_Msg.insert("end", "leddisplay:" + leddisplaystat + "\n")
+                self.P0_Text_Msg.see("end")
             else:
                 self.showmessage(
                     "设置leddisplay失败!R:%s,G:%s,Y:%s,"
@@ -1018,6 +1024,7 @@ class Application(Application_ui):
                 )
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P1_Command_Buzzer_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1033,6 +1040,7 @@ class Application(Application_ui):
                 self.P0_Text_Msg.insert(
                     "end", "audiocontrol:" + audiocontrolstat + "\n"
                 )
+                self.P0_Text_Msg.see("end")
             else:
                 self.showmessage(
                     "设置audiocontrol失败!Num:%s,YD:%s"
@@ -1040,6 +1048,7 @@ class Application(Application_ui):
                 )
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P1_Command_ReaderVer_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1062,8 +1071,10 @@ class Application(Application_ui):
                 + apiv.value.decode("utf-8")
                 + "\n",
             )
+            self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P1_Command_DllVersion_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1077,8 +1088,10 @@ class Application(Application_ui):
                 + version.value.decode("utf-8")
                 + "\n",
             )
+            self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def cpu_cmd(self, command):
         reply = create_string_buffer(256)
@@ -1099,10 +1112,13 @@ class Application(Application_ui):
                     + cmd_stat["reply"].value.decode("utf-8")
                     + "\n",
                 )
+                self.P0_Text_Msg.see("end")
             else:
                 self.P0_Text_Msg.insert("end", "执行失败：%s" % (cmd_stat["stat"]) + "\n")
+                self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_1001_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1115,10 +1131,13 @@ class Application(Application_ui):
                     + cmd_stat["reply"].value.decode("utf-8")
                     + "\n",
                 )
+                self.P0_Text_Msg.see("end")
             else:
                 self.P0_Text_Msg.insert("end", "执行失败：%s" % (cmd_stat["stat"]) + "\n")
+                self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_1005_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1132,13 +1151,16 @@ class Application(Application_ui):
                         + cmd_stat["reply"].value.decode("utf-8")
                         + "\n",
                     )
+                    self.P0_Text_Msg.see("end")
                 else:
                     self.P0_Text_Msg.insert(
                         "end", "执行失败：%s" % (cmd_stat["stat"]) + "\n"
                     )
+                    self.P0_Text_Msg.see("end")
                     break
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_1006_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1152,13 +1174,16 @@ class Application(Application_ui):
                         + cmd_stat["reply"].value.decode("utf-8")
                         + "\n",
                     )
+                    self.P0_Text_Msg.see("end")
                 else:
                     self.P0_Text_Msg.insert(
                         "end", "执行失败：%s" % (cmd_stat["stat"]) + "\n"
                     )
+                    self.P0_Text_Msg.see("end")
                     break
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def cpu_apdu_list(self, commands):
         for command in commands:
@@ -1170,8 +1195,10 @@ class Application(Application_ui):
                     + cmd_stat["reply"].value.decode("utf-8")
                     + "\n",
                 )
+                self.P0_Text_Msg.see("end")
             else:
                 self.P0_Text_Msg.insert("end", "执行失败：%s" % (cmd_stat["stat"]) + "\n")
+                self.P0_Text_Msg.see("end")
                 break
 
     def P2_Command_DF01_Cmd(self, event=None):
@@ -1180,6 +1207,7 @@ class Application(Application_ui):
             self.cpu_apdu_list(commands)
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_EF01_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1187,6 +1215,7 @@ class Application(Application_ui):
             self.cpu_apdu_list(commands)
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_EF02_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1194,6 +1223,7 @@ class Application(Application_ui):
             self.cpu_apdu_list(commands)
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_EF04_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1201,6 +1231,7 @@ class Application(Application_ui):
             self.cpu_apdu_list(commands)
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_OpenCard_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1211,30 +1242,38 @@ class Application(Application_ui):
             )
             if opencardstatus == -1:
                 self.P0_Text_Msg.insert("end", "没有卡，如果是同一卡片再打开，请反转一下卡片或执行复位天线再打开\n")
+                self.P0_Text_Msg.see("end")
             elif opencardstatus == -2 or opencardstatus == -2000:
                 self.P0_Text_Msg.insert("end", "打开卡失败：%d\n" % (opencardstatus))
+                self.P0_Text_Msg.see("end")
             else:
                 self.P0_Text_Msg.insert(
                     "end",
                     "打开卡片：%d ,SNR:%s\n"
                     % (opencardstatus, cardsn.value.decode("utf-8")),
                 )
+                self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_CloseCard_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
             closecardststus = self.vfjreaderexample.closecard(self.Handle)
             self.P0_Text_Msg.insert("end", "关闭卡片：%d \n" % (closecardststus))
+            self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P2_Command_RFreset_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
             resetrfststus = self.vfjreaderexample.resetRF(self.Handle)
             self.P0_Text_Msg.insert("end", "复位天线：%d \n" % (resetrfststus))
+            self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P3_Command_RFpsam_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1246,8 +1285,10 @@ class Application(Application_ui):
                 "复位卡槽%dpsam：%d \n"
                 % (int(self.P3_Combo_PSAMposition.get()), resamststus),
             )
+            self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P3_Command_PSAMcommand_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1269,10 +1310,13 @@ class Application(Application_ui):
                     + reply.value.decode("utf-8")
                     + "\n",
                 )
+                self.P0_Text_Msg.see("end")
             else:
                 self.P0_Text_Msg.insert("end", "执行失败：%s" % (stat) + "\n")
+                self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P3_Command_CPUcommand_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1281,6 +1325,7 @@ class Application(Application_ui):
             self.cpu_apdu_list(commands)
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P3_Command_StopTest_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1290,8 +1335,10 @@ class Application(Application_ui):
                     "end",
                     "总测试数：%d,成功：%d,失败：%d\n" % (self.i, self.success, self.failure),
                 )
+                self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P3_Command_StartTest_Cmd(self, event=None):
         if "vfjreaderexample" in dir(self):
@@ -1315,6 +1362,7 @@ class Application(Application_ui):
                 self.P0_Text_Msg.insert(
                     "end", "总测试次数:%d,尝试次数：%d,间隔时间：%d\n" % (total, n, rt)
                 )
+                self.P0_Text_Msg.see("end")
                 # print("总测试次数:%d,尝试次数：%d,间隔时间：%d" %(total,n,rt))
                 while True:
                     a = 0
@@ -1327,6 +1375,7 @@ class Application(Application_ui):
                             self.P0_Text_Msg.insert(
                                 "end", "开卡成功：%s\n" % (cardsn.value.decode("utf-8"))
                             )
+                            self.P0_Text_Msg.see("end")
                             stat = self.cpu_cmd(command)
                             if stat["stat"] == 0:
                                 self.success += 1
@@ -1344,6 +1393,7 @@ class Application(Application_ui):
                                 self.failure += 1
                                 self.i += 1
                                 self.P0_Text_Msg.insert("end", "开卡失败%d次\n" % (a))
+                                self.P0_Text_Msg.see("end")
                                 break  # 达到尝试次数后退出
                         time.sleep(rt)
                     if self.i == total or self.lock:
@@ -1352,10 +1402,12 @@ class Application(Application_ui):
                     "end",
                     "总测试数：%d,成功：%d,失败：%d\n" % (self.i, self.success, self.failure),
                 )
+                self.P0_Text_Msg.see("end")
 
             # P3_Text_Tested
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开" + "\n")
+            self.P0_Text_Msg.see("end")
 
     def P0_Command_Find_Cmd(self, event=None):
         try:
@@ -1364,6 +1416,7 @@ class Application(Application_ui):
             apiv = create_string_buffer(10 * 3)
             readerexample = loadlibrary(os_type, self.P0_Combo_region.get())
             self.P0_Text_Msg.insert("end", "开始扫描读写器,请不要关闭程序！！\n")
+            self.P0_Text_Msg.see("end")
             for i in self.P0_Combo_portList:
                 stat = openreader_test(readerexample, i)
                 if stat > 0:
@@ -1378,10 +1431,13 @@ class Application(Application_ui):
                         + apiv.value.decode("utf-8")
                         + "\n",
                     )
+                    self.P0_Text_Msg.see("end")
                     closereader_test(readerexample, stat)
                 else:
                     self.P0_Text_Msg.insert("end", "打开%s读写器失败:\n" % (i))
+                    self.P0_Text_Msg.see("end")
             self.P0_Text_Msg.insert("end", "完成扫描\n")
+            self.P0_Text_Msg.see("end")
         finally:
             if re.search("linux", platform.platform()):
                 # 如果是Linux系统，使用ctypes.CDLL()._handle释放动态库
@@ -1416,8 +1472,10 @@ class Application(Application_ui):
                 self.P0_Combo_port["state"] = "disabled"
                 self.Handle = openstat_int
                 self.P0_Text_Msg.insert("end", "打开读写器成功！句柄：%d\n" % (openstat_int))
+                self.P0_Text_Msg.see("end")
             else:
                 self.P0_Text_Msg.insert("end", "打开读写器失败！返回码：%d\n" % (openstat_int))
+                self.P0_Text_Msg.see("end")
         except Exception as e:
             print("Error:", e)
 
@@ -1428,14 +1486,18 @@ class Application(Application_ui):
                 self.P0_Combo_region["state"] = "normal"
                 self.P0_Combo_port["state"] = "normal"
                 self.P0_Text_Msg.insert("end", "关闭读写器，返回码：%d\n" % (closestat))
+                self.P0_Text_Msg.see("end")
             else:
                 closestat = self.vfjreaderexample.closereader()
                 if closestat == 0:
                     self.P0_Text_Msg.insert("end", "关闭COM1读写器成功：%d\n" % (closestat))
+                    self.P0_Text_Msg.see("end")
                 else:
                     self.P0_Text_Msg.insert("end", "关闭读写器失败，返回码：%d\n" % (closestat))
+                    self.P0_Text_Msg.see("end")
         else:
             self.P0_Text_Msg.insert("end", "读写器未打开\n")
+            self.P0_Text_Msg.see("end")
 
     def showmessage(self, messge):
         if sys.version_info[0] == 2:
