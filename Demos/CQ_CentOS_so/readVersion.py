@@ -63,3 +63,6 @@ for i in range(1, 5):
         psamType(psamlenrep, Handle, i)
     else:
         print("复位卡槽:" + str(i) + "败或没有卡!")
+
+library.JT_CloseReader(Handle)
+sys.exit()
