@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="Black">
-    <option name="sdkUUID" value="fb709bec-ab3a-4c6a-884d-4a0573412f7d" />
+    <option name="enabledOnReformat" value="true" />
+    <option name="enabledOnSave" value="true" />
+    <option name="pathToExecutable" value="$PROJECT_DIR$/../anaconda3/bin/black" />
+    <option name="sdkUUID" value="24d7f182-e356-4b8c-919b-e918a934d8b0" />
   </component>
   <component name="ProjectRootManager" version="2" project-jdk-name="D:\ProgramData\Anaconda3" project-jdk-type="Python SDK" />
 </project>

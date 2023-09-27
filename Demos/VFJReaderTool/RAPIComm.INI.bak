@@ -1,0 +1,23 @@
+[COMMS]
+ModeReader1=COM0:AUTO,N,8,1
+
+SecureMode=NO
+
+[SYSTEM]
+Language=english
+Format=AB
+
+[LOGGING]
+LogToFileOn=YES
+LogFileName=logfile.txt
+LogLevel=2
+
+
+[RWUnit]
+SCAN=1,2
+
+[BAUDS]
+AUTO=115200,38400
+
+;	it be searched on current directory and then /etc/rapi/
+
