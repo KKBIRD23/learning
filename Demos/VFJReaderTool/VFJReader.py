@@ -8,6 +8,8 @@ import re
 from ctypes import create_string_buffer
 from pathlib import Path
 
+import serial.tools.list_ports
+
 
 # import numpy as np
 
@@ -63,6 +65,56 @@ def readerversion_test(
 def closereader_test(readerlibrarytest, com):
     closereaderstat = readerlibrarytest.JT_CloseReader(ctypes.c_int(com))
     return closereaderstat
+
+
+def touch_ini():
+    # 判断系统是否为Linux
+    os_type = platform.system()
+    print(os_type)
+    # 如果系统为linux
+    if os_type == "Linux":
+        # 判断./rapicomm.ini是否存在，如果不存在则创建
+        if not os.path.exists("./rapicomm.ini"):
+            com_list = []
+            for coms in serial.tools.list_ports.comports():
+                com_list.append(coms.name)
+            com_list.reverse()
+            print(com_list)
+            with open("./rapicomm.ini", "a") as f:
+                f.write("[COMMS]\n")
+            for com in com_list:
+                with open("./rapicomm.ini", "a") as f:
+                    f.write(
+                        "COM"
+                        + str(int(com.replace("ttyUSB", "").replace("ttyS", "")) + 1)
+                        + "="
+                        + com
+                        + ":AUTO,N,8,1\n"
+                    )
+            with open("./rapicomm.ini", "a") as f:
+                f.write(
+                    "\n"
+                    + "[SYSTEM]\n"
+                    + "Language=english\n"
+                    + "Format=AB\n"
+                    + "\n"
+                    + "[LOGGING]\n"
+                    + "LogToFileOn=NO\n"
+                    + "LogFileName=logfile.txt\n"
+                    + "LogLevel=2\n"
+                    + "\n"
+                )
+                f.write(
+                    "[RWUnit]\n"
+                    + "SCAN=1,2\n"
+                    + "\n"
+                    + "[BAUDS]\n"
+                    + "AUTO=115200,38400\n"
+                    + "\n"
+                    + ";	it be searched on current directory and then /etc/rapi/"
+                )
+    else:
+        print("rapicomm.ini已存在，直接读取内容")
 
 
 class VFJReader:

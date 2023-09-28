@@ -9,7 +9,7 @@ application_version = "1.0"
 executables = [Executable('VFJ读写器综合工具.py', base=None, target_name = 'VFJReaderTool')]
 
 # 包含的文件夹及其目标路径（在可执行文件目录下）
-include_files = [("DLL", "DLL"),("rapicomm.ini","rapicomm.ini")]
+include_files = [("DLL", "DLL")]
 
 # 定义应用程序的依赖项
 includes = ["VFJReader"]
