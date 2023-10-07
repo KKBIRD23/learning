@@ -8,12 +8,15 @@ import threading
 import time
 from ctypes import create_string_buffer
 
+import serial.tools.list_ports
+
 from VFJReader import (
     VFJReader,
     loadlibrary,
     openreader_test,
     readerversion_test,
     closereader_test,
+    touch_ini,
 )
 
 if sys.version_info[0] == 2:
@@ -840,17 +843,25 @@ class Application_ui(Frame):
         self.P0_Command2.text = lambda: self.P0_Command2Var.get()
         self.P0_Command2.place(relx=0.677, rely=0.566, relwidth=0.205, relheight=0.363)
 
-        self.P0_Combo_portList = [
-            "COM1",
-            "COM2",
-            "COM3",
-            "COM4",
-            "COM5",
-            "COM6",
-            "COM7",
-            "COM8",
-            "COM9",
-        ]
+        # self.P0_Combo_portList = [
+        #     "COM1",
+        #     "COM2",
+        #     "COM3",
+        #     "COM4",
+        #     "COM5",
+        #     "COM6",
+        #     "COM7",
+        #     "COM8",
+        #     "COM9",
+        # ]
+        self.P0_Combo_portList = []
+        for coms in serial.tools.list_ports.comports():
+            self.P0_Combo_portList.append(
+                "COM"
+                + str(int(coms.name.replace("ttyUSB", "").replace("ttyS", "")) + 1)
+            )
+        self.P0_Combo_portList.reverse()
+
         self.P0_Combo_portVar = StringVar(value="COM1")
         self.P0_Combo_port = Combobox(
             self.Frame1,
@@ -1509,6 +1520,7 @@ class Application(Application_ui):
 class MyApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        touch_ini()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def on_closing(self):
