@@ -4,7 +4,7 @@
     <option name="enabledOnReformat" value="true" />
     <option name="enabledOnSave" value="true" />
     <option name="pathToExecutable" value="$PROJECT_DIR$/../anaconda3/bin/black" />
-    <option name="sdkUUID" value="24d7f182-e356-4b8c-919b-e918a934d8b0" />
+    <option name="sdkName" value="$PROJECT_DIR$/../anaconda3" />
   </component>
   <component name="ProjectRootManager" version="2" project-jdk-name="$PROJECT_DIR$/../anaconda3" project-jdk-type="Python SDK" />
 </project>
