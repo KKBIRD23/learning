@@ -6,5 +6,5 @@
     <option name="pathToExecutable" value="$PROJECT_DIR$/../anaconda3/bin/black" />
     <option name="sdkName" value="$PROJECT_DIR$/../anaconda3" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="$PROJECT_DIR$/../anaconda3" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="D:\ProgramData\Anaconda3" project-jdk-type="Python SDK" />
 </project>
