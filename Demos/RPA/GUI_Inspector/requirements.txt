@@ -1,0 +1,3 @@
+PyQt5>=5.15.0
+uiautomation>=2.0.15
+pyperclip>=1.8.0  # 用于剪贴板操作
