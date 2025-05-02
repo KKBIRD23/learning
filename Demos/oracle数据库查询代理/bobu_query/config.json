@@ -1,0 +1,6 @@
+{
+    "db_user": "bobup",
+    "db_password": "vfj_20231007",
+    "db_dsn": "10.50.14.185:1521/tycenter",
+    "api_key": "Vfj@1234.oracle"
+}
