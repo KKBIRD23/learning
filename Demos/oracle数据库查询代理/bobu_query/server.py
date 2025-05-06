@@ -11,7 +11,7 @@ import logging
 import time
 import glob
 import datetime
-import fcntl  # 新增：用于单例锁
+import fcntl
 from logging.handlers import TimedRotatingFileHandler
 from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 
@@ -104,7 +104,7 @@ def clean_old_logs():
                 logger.warning(u"清理日志失败 %s: %s", log_path, str(e))
 
 # ---------------------------
-# HTTP请求处理器（核心修复点）
+# HTTP请求处理器（已修复）
 # ---------------------------
 class OracleRequestHandler(BaseHTTPRequestHandler):
     def _send_response(self, status, data):
@@ -119,11 +119,17 @@ class OracleRequestHandler(BaseHTTPRequestHandler):
         logger.info("[Access] %s - %s", self.client_address[0], format % args)
 
     def do_POST(self):
+        conn = None
+        cursor = None
         try:
             # 1. 认证检查
             if self.headers.get('X-Api-Key') != API_KEY:
                 logger.warning(u"非法访问尝试 from %s", self.client_address[0])
-                return self._send_response(401, {"error": "未授权"})
+                return self._send_response(401, {
+                    "success": False,
+                    "data": None,
+                    "error": "未授权"
+                })
             
             # 2. 解析请求参数
             content_len = int(self.headers.get('content-length', 0))
@@ -131,59 +137,92 @@ class OracleRequestHandler(BaseHTTPRequestHandler):
             params = urlparse.parse_qs(raw_data)
             
             if 'sql' not in params or not params['sql'][0]:
-                return self._send_response(400, {"error": "缺少SQL参数"})
+                return self._send_response(400, {
+                    "success": False,
+                    "data": None,
+                    "error": "缺少SQL参数"
+                })
             sql = params['sql'][0].strip()
             bind_vars = json.loads(params.get('params', ['{}'])[0])
             
-            # 3. 执行数据库查询
+            # 3. 执行数据库操作
             conn = pool.acquire()
             cursor = conn.cursor()
             cursor.execute(sql, **bind_vars)
-            
-            # 4. 处理结果编码（关键修复）
-            columns = [col[0] for col in cursor.description]
-            rows = []
-            for row in cursor:
-                row_dict = {}
-                for idx, value in enumerate(row):
-                    if isinstance(value, (str, cx_Oracle.LOB)):
-                        # 将LOB类型转为字符串，并处理GBK到UTF-8的转换
-                        str_value = str(value) if isinstance(value, cx_Oracle.LOB) else value
-                        try:
-                            decoded_value = str_value.decode('gbk')  # 从GBK解码
-                        except UnicodeDecodeError:
-                            decoded_value = str_value  # 容错处理
-                        row_dict[columns[idx]] = decoded_value
-                    else:
-                        row_dict[columns[idx]] = value
-                rows.append(row_dict)
-            
-            # 5. 记录成功日志
+
+            # 4. 构建响应数据
+            response_data = {
+                "success": True,
+                "data": None,
+                "error": None
+            }
+
+            # 5. 处理结果集
+            if cursor.description:  # 查询语句
+                columns = [col[0] for col in cursor.description]
+                rows = []
+                for row in cursor:
+                    row_dict = {}
+                    for idx, value in enumerate(row):
+                        if isinstance(value, (str, cx_Oracle.LOB)):
+                            # 处理编码转换
+                            str_value = str(value) if isinstance(value, cx_Oracle.LOB) else value
+                            try:
+                                decoded_value = str_value.decode('gbk')  # GBK转UTF-8
+                            except UnicodeDecodeError:
+                                decoded_value = str_value  # 容错处理
+                            row_dict[columns[idx]] = decoded_value
+                        else:
+                            row_dict[columns[idx]] = value
+                    rows.append(row_dict)
+                response_data["data"] = rows
+            else:  # 更新语句
+                conn.commit()
+                response_data["data"] = {"affected_rows": cursor.rowcount}
+
+            # 6. 记录成功日志
             logger.info(
-                u"成功查询 from %s | SQL: %s | 参数: %s",
+                u"操作成功 from %s | SQL: %s | 参数: %s | 结果类型: %s",
                 self.client_address[0],
                 sql,
-                json.dumps(bind_vars, ensure_ascii=False)
+                json.dumps(bind_vars, ensure_ascii=False),
+                "查询" if cursor.description else "更新"
             )
             
-            self._send_response(200, {"data": rows})
+            self._send_response(200, response_data)
             
         except cx_Oracle.DatabaseError as e:
+            if conn:
+                conn.rollback()
             error_msg = u"数据库错误: {}".format(str(e))
             logger.error(error_msg)
-            self._send_response(500, {"error": error_msg})
+            self._send_response(500, {
+                "success": False,
+                "data": None,
+                "error": error_msg
+            })
         except ValueError as e:
             error_msg = u"参数解析错误: {}".format(str(e))
             logger.error(error_msg)
-            self._send_response(400, {"error": error_msg})
+            self._send_response(400, {
+                "success": False,
+                "data": None,
+                "error": error_msg
+            })
         except Exception as e:
-            error_msg = u"未捕获的异常: {}".format(str(e))
+            if conn:
+                conn.rollback()
+            error_msg = u"服务器内部错误: {}".format(str(e))
             logger.exception(error_msg)
-            self._send_response(500, {"error": "服务器内部错误"})
+            self._send_response(500, {
+                "success": False,
+                "data": None,
+                "error": error_msg
+            })
         finally:
-            if 'cursor' in locals():
+            if cursor:
                 cursor.close()
-            if 'conn' in locals():
+            if conn:
                 pool.release(conn)
 
 # ---------------------------
