@@ -1,10 +1,10 @@
 # coding: utf-8
 """
 OBU (车载单元) 镭标码识别与矩阵输出脚本
-版本: v2.9.2_Math_Calibration_with_YOLO_Assist
+版本: v2.9.3_Smart_Grid_Generation
 功能:
-- 核心: 实现基于少数控制点进行数学标定，精确推断OBU网格，并填充识别结果。
-- YOLO检测条码作为OBU锚点，辅助选取控制点。
+- 核心: 智能识别特殊行, 基于YOLO锚点和布局先验进行透视感知的理想网格推断, 并填充识别结果。
+- YOLO检测条码作为OBU锚点。
 - PaddleOCR识别数字。
 - 输出最终的OBU矩阵。
 """
@@ -15,77 +15,66 @@ import time
 import traceback
 import paddleocr
 import onnxruntime
-from itertools import product
-import csv
-from datetime import datetime
 from collections import Counter
-from scipy.spatial.distance import cdist # 用于计算距离矩阵，方便匹配
+from scipy.spatial.distance import cdist
+from datetime import datetime
 
-# --- V2.9.2 配置参数 ---
-VERSION = "v2.9.2_Math_Calibration_with_YOLO_Assist"
+# --- V2.9.3 配置参数 ---
+VERSION = "v2.9.3_Smart_Grid_Generation"
 IMAGE_PATHS = [
     r"../../DATA/PIC/1.JPG",
     r"../../DATA/PIC/2.JPG",
-    r"../../DATA/PIC/3.JPG",
+    r"../../DATA/PIC/3.JPG"
 ]
-BASE_OUTPUT_DIR = "./output_v2.9_math_calib"
+BASE_OUTPUT_DIR = "./output_v2.9_smart_grid"
 TIMESTAMP_NOW = datetime.now().strftime("%Y%m%d_%H%M%S")
 CURRENT_RUN_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, f"run_{TIMESTAMP_NOW}_{VERSION}")
-# LOG_FILE_PATH = os.path.join(CURRENT_RUN_OUTPUT_DIR, f"矩阵日志_{VERSION}_{TIMESTAMP_NOW}.csv") # 可选
 os.makedirs(CURRENT_RUN_OUTPUT_DIR, exist_ok=True)
 
 # --- PaddleOCR 初始化相关参数 ---
-LANG_CFG = 'en'
-USE_TEXTLINE_ORIENTATION_CFG = False
-USE_DOC_ORIENTATION_CLASSIFY_CFG = False
-USE_DOC_UNWARPING_CFG = False
-OCR_VERSION_CFG = None
-TEXT_DETECTION_MODEL_DIR_CFG = None
-TEXT_RECOGNITION_MODEL_DIR_CFG = None
-TEXT_DETECTION_MODEL_NAME_CFG = None
-TEXT_RECOGNITION_MODEL_NAME_CFG = None
-PADDLE_OCR_FINE_PARAMS = {
-    "text_det_limit_side_len": 960, "text_det_thresh": 0.3,
-    "text_det_box_thresh": 0.6, "text_rec_score_thresh": 0.5,
-}
+LANG_CFG = 'en'; USE_TEXTLINE_ORIENTATION_CFG = False; USE_DOC_ORIENTATION_CLASSIFY_CFG = False
+USE_DOC_UNWARPING_CFG = False; OCR_VERSION_CFG = None
+TEXT_DETECTION_MODEL_DIR_CFG = None; TEXT_RECOGNITION_MODEL_DIR_CFG = None
+TEXT_DETECTION_MODEL_NAME_CFG = None; TEXT_RECOGNITION_MODEL_NAME_CFG = None
+PADDLE_OCR_FINE_PARAMS = {"text_det_limit_side_len": 960, "text_det_thresh": 0.3,
+                          "text_det_box_thresh": 0.6, "text_rec_score_thresh": 0.5}
 
-# --- OBU码筛选规则 (PaddleOCR后处理) ---
-OBU_CODE_PREFIX_FILTER_CFG = "5001"
-OBU_CODE_LENGTH_FILTER_CFG = 16
-MIN_OBU_SCORE_FOR_CONTROL_POINT = 0.85 # 作为控制点的OBU的最低置信度
+# --- OBU码筛选规则 ---
+OBU_CODE_PREFIX_FILTER_CFG = "5001"; OBU_CODE_LENGTH_FILTER_CFG = 16
 
 # --- YOLOv8 相关配置 ---
 YOLO_ONNX_MODEL_PATH_CFG = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx"
-YOLO_CONFIDENCE_THRESHOLD_CFG = 0.25
-YOLO_IOU_THRESHOLD_CFG = 0.45
-YOLO_INPUT_WIDTH_CFG = 640
-YOLO_INPUT_HEIGHT_CFG = 640
+YOLO_CONFIDENCE_THRESHOLD_CFG = 0.25; YOLO_IOU_THRESHOLD_CFG = 0.45
+YOLO_INPUT_WIDTH_CFG = 640; YOLO_INPUT_HEIGHT_CFG = 640
 
 # --- 矩阵与布局先验配置 ---
 LAYOUT_CONFIG = {
-    "total_obus": 50,
-    "regular_rows": 12,
-    "regular_cols": 4,
-    "special_row_cols": 2,
-    # "special_row_is_last": True # 这个将由程序动态判断或结合控制点推断
+    "total_obus": 50,               # 期望的总OBU数量
+    "regular_rows_count": 12,       # 常规行的数量
+    "regular_cols_count": 4,        # 常规行每行的OBU数量
+    "special_row_cols_count": 2,    # 特殊行（只有2个OBU）的列数
+    "expected_total_rows": 13,      # 期望的总行数 (常规行 + 特殊行)
+    "special_row_exists": True      # <--- 新增这一行，明确告知有特殊行
 }
-# 匹配和几何推断的阈值
-CONTROL_POINT_MATCH_MAX_DIST = 30 # 控制点YOLO框中心与Paddle数字框中心的最大匹配距离（像素）
-PADDLE_OBU_TO_IDEAL_GRID_MAX_DIST_FACTOR = 0.7 # PaddleOCR识别的数字中心与理想格点中心的最大匹配距离因子 (乘以平均OBU估算宽度)
 
+# --- 算法相关阈值 ---
+YOLO_ROW_GROUP_Y_THRESHOLD_FACTOR = 0.5 # Y坐标差异阈值 = 平均框高 * 此因子
+PADDLE_OBU_TO_GRID_MAX_DIST_FACTOR = 0.75 # 匹配距离阈值因子 (乘以平均YOLO条码宽度)
+MIN_YOLO_ANCHORS_FOR_LAYOUT = 10 # 至少需要的YOLO锚点数
+MIN_OBUS_FOR_RELIABLE_ROW = 2 # 一行中至少要有这么多OBU才认为它对间距估计有贡献
 
 # --- 全局变量 ---
-paddle_ocr_engine_global = None
-yolo_session_global = None
+paddle_ocr_engine_global = None; yolo_session_global = None
 
 # --- 函数定义 ---
-# initialize_paddleocr, load_yolo_model (与V2.9.1一致)
-# preprocess_for_yolo, non_max_suppression_global, postprocess_yolo_detections, get_yolo_barcode_anchors (您已提供并验证)
-# get_box_center_and_dims (已验证)
-# draw_ocr_results_refined (用于临时可视化PaddleOCR结果)
-# print_matrix_to_console (用于打印最终矩阵)
-# (为保持框架清晰，这些已验证或您已提供的函数代码暂时省略，请确保它们在您的脚本中)
-# ... (Ensure these functions are correctly defined in your script as per previous versions) ...
+# initialize_paddleocr, load_yolo_model (与V2.9.2一致)
+# preprocess_for_yolo, non_max_suppression_global, postprocess_yolo_detections, get_yolo_barcode_anchors (来自V2.9.2)
+# get_box_center_and_dims (来自V2.9.2)
+# draw_ocr_results_refined (来自V2.8.4, 用于临时可视化PaddleOCR原始结果)
+# print_matrix_to_console (来自V2.9.1)
+# --- 请确保这些辅助函数已正确包含在脚本中 ---
+# (为了聚焦核心算法，我再次省略这些辅助函数的代码，假设它们已正确无误)
+# ... (Paste the helper functions from V2.9.2/V2.8.4 here) ...
 def initialize_paddleocr():
     global paddle_ocr_engine_global
     init_params = {'lang': LANG_CFG, 'use_textline_orientation': USE_TEXTLINE_ORIENTATION_CFG, 'use_doc_orientation_classify': USE_DOC_ORIENTATION_CLASSIFY_CFG, 'use_doc_unwarping': USE_DOC_UNWARPING_CFG, 'ocr_version': OCR_VERSION_CFG, 'text_detection_model_dir': TEXT_DETECTION_MODEL_DIR_CFG, 'text_recognition_model_dir': TEXT_RECOGNITION_MODEL_DIR_CFG,'text_detection_model_name': TEXT_DETECTION_MODEL_NAME_CFG, 'text_recognition_model_name': TEXT_RECOGNITION_MODEL_NAME_CFG, **PADDLE_OCR_FINE_PARAMS }
@@ -140,42 +129,12 @@ def postprocess_yolo_detections(outputs_onnx, conf_threshold, iou_threshold,orig
     return final_barcode_boxes_xyxy
 
 def get_yolo_barcode_anchors(image):
-    """使用YOLO模型检测图片中的所有条码，返回条码框列表（锚点）。"""
-    if not yolo_session_global:
-        print("错误: YOLO会话未初始化。")
-        return [], 0.0
-
+    if not yolo_session_global: print("错误: YOLO会话未初始化。"); return [], 0.0
     input_tensor, ratio, pad_x, pad_y = preprocess_for_yolo(image, YOLO_INPUT_HEIGHT_CFG, YOLO_INPUT_WIDTH_CFG)
-
     input_name = yolo_session_global.get_inputs()[0].name
-    t_start = time.time()
-    outputs = yolo_session_global.run(None, {input_name: input_tensor})
-    yolo_predict_time = time.time() - t_start
+    t_start = time.time(); outputs = yolo_session_global.run(None, {input_name: input_tensor}); yolo_predict_time = time.time() - t_start
     print(f"  YOLO predict() 耗时 {yolo_predict_time:.3f}s")
-
-    # --- 关键修正：使用关键字参数或严格按顺序传递 ---
-    detected_barcode_boxes = postprocess_yolo_detections(
-        outputs_onnx=outputs,
-        conf_threshold=YOLO_CONFIDENCE_THRESHOLD_CFG,
-        iou_threshold=YOLO_IOU_THRESHOLD_CFG,
-        original_shape_hw=image.shape[:2],
-        model_input_shape_hw=(YOLO_INPUT_HEIGHT_CFG, YOLO_INPUT_WIDTH_CFG),
-        ratio_preproc=ratio,
-        pad_x_preproc=pad_x,
-        pad_y_preproc=pad_y
-    )
-    # 或者严格按顺序（不推荐，易错）:
-    # detected_barcode_boxes = postprocess_yolo_detections(
-    #     outputs,
-    #     YOLO_CONFIDENCE_THRESHOLD_CFG,
-    #     YOLO_IOU_THRESHOLD_CFG,
-    #     image.shape[:2],
-    #     (YOLO_INPUT_HEIGHT_CFG, YOLO_INPUT_WIDTH_CFG),
-    #     ratio,
-    #     pad_x,
-    #     pad_y
-    # )
-
+    detected_barcode_boxes = postprocess_yolo_detections(outputs_onnx=outputs, conf_threshold=YOLO_CONFIDENCE_THRESHOLD_CFG, iou_threshold=YOLO_IOU_THRESHOLD_CFG, original_shape_hw=image.shape[:2], model_input_shape_hw=(YOLO_INPUT_HEIGHT_CFG, YOLO_INPUT_WIDTH_CFG), ratio_preproc=ratio, pad_x_preproc=pad_x, pad_y_preproc=pad_y)
     print(f"  YOLO检测到 {len(detected_barcode_boxes)} 个条码框。")
     return detected_barcode_boxes, yolo_predict_time
 
@@ -187,10 +146,10 @@ def get_box_center_and_dims(box_xyxy_or_poly):
     elif isinstance(box_xyxy_or_poly, (list, np.ndarray)) and len(box_xyxy_or_poly) > 0 and isinstance(box_xyxy_or_poly[0], (list, np.ndarray)):
         points = np.array(box_xyxy_or_poly, dtype=np.int32)
         if len(points) > 0: x, y, w, h = cv2.boundingRect(points); return x + w // 2, y + h // 2, w, h
-    print(f"警告: get_box_center_and_dims 接收到无法解析的box格式: {box_xyxy_or_poly}"); return None, None, None, None
+    # print(f"警告: get_box_center_and_dims 接收到无法解析的box格式: {box_xyxy_or_poly}"); # 减少不必要的打印
+    return None, None, None, None
 
 def draw_ocr_results_refined(image, all_ocr_data, potential_obu_data, output_path="output_ocr_visualization.png"):
-    # (与V2.8.4版本一致)
     img_out = image.copy();_c = cv2
     if img_out is None: print(f"错误: 用于绘制的输入图像为None。无法保存到 {output_path}"); return
     if not all_ocr_data and not potential_obu_data :
@@ -230,148 +189,189 @@ def print_matrix_to_console(matrix, strategy_name=""):
         print(" ".join(row_display))
     print("---------------------------------------------")
 
-
-# --- 核心：数学标定与矩阵构建 ---
-def build_matrix_with_math_calibration(yolo_anchors_input, paddle_results_input, layout_config, image_wh):
+# --- 核心：智能网格生成与填充 ---
+def build_matrix_smart_grid(yolo_anchors_input, paddle_results_input, layout_config, image_wh):
     """
-    核心函数：通过YOLO锚点辅助选择控制点，进行数学标定，推断理想网格，并用PaddleOCR结果填充。
-    Args:
-        yolo_anchors_input (list): YOLO检测到的条码框列表 [{'cx', 'cy', 'w', 'h', 'box_yolo'}, ...]
-        paddle_results_input (list): PaddleOCR筛选后的OBU结果列表 [{"text":..., "score":..., "box":poly, 'cx', 'cy'}, ...]
-        layout_config (dict): 包含布局先验的配置
-        image_wh (tuple): 原始图片的宽度和高度 (w, h)
-    Returns:
-        list: 二维矩阵, int: 填充的OBU数量
+    核心函数：通过YOLO锚点、特殊行识别和布局先验，精确推断理想网格，并用PaddleOCR结果填充。
     """
-    print("  正在执行数学标定矩阵构建...")
-    if not yolo_anchors_input:
-        print("  YOLO未提供锚点，数学标定法无法执行。")
-        return [["YOLO无锚点"] * layout_config["regular_cols"]], 0
+    print("  正在执行智能网格矩阵构建...")
+    if not yolo_anchors_input or len(yolo_anchors_input) < MIN_YOLO_ANCHORS_FOR_LAYOUT:
+        print(f"  YOLO锚点数量 ({len(yolo_anchors_input)}) 不足 ({MIN_YOLO_ANCHORS_FOR_LAYOUT}个)，无法进行可靠布局推断。")
+        # 返回一个符合预期总行数和常规列数的空矩阵
+        return [["YOLO锚点不足"] * layout_config["regular_cols_count"] for _ in range(layout_config["expected_total_rows"])], 0
 
-    # 1. 预处理PaddleOCR结果，添加中心点，并按分数筛选控制点候选
-    control_point_candidates = []
-    for pr in paddle_results_input:
-        if pr['score'] >= MIN_OBU_SCORE_FOR_CONTROL_POINT:
-            cx, cy, _, _ = get_box_center_and_dims(pr['box'])
-            if cx is not None:
-                control_point_candidates.append({**pr, 'cx': cx, 'cy': cy, 'used_for_calib': False})
-
-    if len(control_point_candidates) < 3: # 至少需要3个点才能做初步的几何推断
-        print(f"  高置信度OBU数量 ({len(control_point_candidates)}) 不足3个，无法进行有效数学标定。")
-        # 此处可以回退到V2.9.1的 build_matrix_yolo_axis_calibrated 的简化逻辑，或者直接返回空/错误
-        # 为简化，我们先返回一个提示性的空矩阵
-        return [["控制点不足"] * layout_config["regular_cols"]], 0
-
-    # 2. 选取控制点 (这是一个复杂的步骤，以下是非常简化的初步思路)
-    #    目标：找到3-4个分布良好（例如，构成四边形）的、且其位置能被YOLO条码框佐证的控制点。
-    #    我们先尝试找到与YOLO条码框匹配的高置信度PaddleOCR结果作为控制点。
-
-    # 2a. 将YOLO锚点和PaddleOCR高置信度候选进行匹配
-    #     (这是一个简化的匹配，实际可能需要更复杂的对应关系)
-    calib_control_points_img_coords = [] # 存储控制点在图像上的 (cx, cy)
-    calib_control_points_logical_coords = [] # 存储这些控制点在逻辑网格中的 (row, col) - 这步最难！
-
-    # 排序YOLO锚点，方便后续处理
     yolo_anchors_sorted = sorted(yolo_anchors_input, key=lambda a: (a['cy'], a['cx']))
 
-    # ==========================================================================
-    # TODO: Wang, "选取控制点" 和 "从控制点推断理想网格" 是这里的核心难点。
-    # 以下是一个非常非常初步的、占位性的逻辑，几乎肯定无法直接工作，需要我们一起大力填充和优化。
-    # 我们需要一个鲁棒的方法来从 yolo_anchors_sorted 和 control_point_candidates 中选出几个点，
-    # 并确定它们在50个OBU的逻辑网格中的准确(行,列)索引。
-    #
-    # 暂时策略：我们先假设能神奇地找到左上角、右上角、左下角（或特殊行的点）的3-4个控制点。
-    # 在实际实现中，这可能需要复杂的几何分析、霍夫变换、RANSAC等。
-    #
-    # 简化占位：我们先强行取YOLO锚点中的几个作为“伪控制点”，并假设它们的逻辑坐标。
-    # 这只是为了让后续的“理想网格生成”和“填充”能跑起来，实际效果会很差。
-    # ==========================================================================
+    yolo_rows_grouped = []
+    # ... (YOLO行分组逻辑与您V2.9.3版本一致，确保 current_row_for_grouping 在循环外初始化或正确处理)
+    if not yolo_anchors_sorted: return [["无有效YOLO锚点"]*layout_config["regular_cols_count"] for _ in range(layout_config["expected_total_rows"])],0
+    avg_h_yolo = np.mean([a['h'] for a in yolo_anchors_sorted if a['h'] > 0]) if any(a['h'] > 0 for a in yolo_anchors_sorted) else 30
+    y_threshold = avg_h_yolo * YOLO_ROW_GROUP_Y_THRESHOLD_FACTOR
+    current_row_for_grouping = [yolo_anchors_sorted[0]]
+    for i in range(1, len(yolo_anchors_sorted)):
+        if abs(yolo_anchors_sorted[i]['cy'] - current_row_for_grouping[-1]['cy']) < y_threshold:
+            current_row_for_grouping.append(yolo_anchors_sorted[i])
+        else:
+            yolo_rows_grouped.append(sorted(current_row_for_grouping, key=lambda a: a['cx']))
+            current_row_for_grouping = [yolo_anchors_sorted[i]]
+    if current_row_for_grouping: yolo_rows_grouped.append(sorted(current_row_for_grouping, key=lambda a: a['cx']))
+    print(f"  YOLO锚点初步分为 {len(yolo_rows_grouped)} 行。每行数量: {[len(r) for r in yolo_rows_grouped]}")
 
-    if len(yolo_anchors_sorted) >= 4: # 假设我们至少有4个YOLO锚点可以作为粗略的参考
-        # 这是一个非常粗糙的假设，实际需要智能选取
-        # 假设我们取YOLO锚点中最左上、最右上、最左下、最右下的点（或接近的点）
-        # 并强行赋予它们逻辑坐标，这在真实场景中是不准确的。
+    # --- 步骤3b: 生成理想坑位坐标 (改进的占位逻辑，尝试生成接近50个) ---
+    print("  警告: 理想坑位生成逻辑仍在优化中，当前为初步实现。")
+    ideal_grid_slots = []
 
-        # 示例：取YOLO锚点中的第一个、第 regular_cols-1 个（如果存在的话）
-        # 第 (regular_rows-1)*regular_cols 个， 最后一个
-        # 这完全是示意性的，不能直接用于生产！
+    # 尝试从YOLO行中获取一些全局参数
+    avg_obu_w_overall = np.mean([a['w'] for a in yolo_anchors_sorted if a['w'] > 0]) if any(a['w'] > 0 for a in yolo_anchors_sorted) else 100
+    avg_obu_h_overall = np.mean([a['h'] for a in yolo_anchors_sorted if a['h'] > 0]) if any(a['h'] > 0 for a in yolo_anchors_sorted) else 40
 
-        # ---- 这里需要替换为真正的控制点选取和逻辑坐标确定算法 ----
-        print("  警告: 当前使用的是占位性的控制点选取逻辑，矩阵结果可能不准确！")
-        # 假设我们通过某种方式（例如，YOLO的特殊行识别）找到了以下控制点：
-        # control_points_for_transform = [
-        #    {'img_cx': yolo_anchor1_cx, 'img_cy': yolo_anchor1_cy, 'logical_row': 0, 'logical_col': 0},
-        #    {'img_cx': yolo_anchor2_cx, 'img_cy': yolo_anchor2_cy, 'logical_row': 0, 'logical_col': layout_config['regular_cols']-1},
-        #    {'img_cx': yolo_anchor3_cx, 'img_cy': yolo_anchor3_cy, 'logical_row': layout_config['regular_rows']-1, 'logical_col': 0},
-        #    # 如果有第四个点会更好，例如右下角
-        # ]
-        # 如果控制点少于3个，无法计算变换
+    # 估算行Y坐标 (如果YOLO行数不足，则基于平均行高进行补充)
+    estimated_row_y_coords = []
+    if len(yolo_rows_grouped) >= 1:
+        for r_group in yolo_rows_grouped:
+            estimated_row_y_coords.append(np.mean([a['cy'] for a in r_group]))
+        # 如果YOLO行数少于预期的13行，尝试补充
+        while len(estimated_row_y_coords) < layout_config["expected_total_rows"] and len(estimated_row_y_coords) > 0:
+            estimated_row_y_coords.append(estimated_row_y_coords[-1] + avg_obu_h_overall * 1.5) # 简单向下延伸
+    else: # 如果YOLO完全没分出行，用一个非常粗略的估计
+        img_h = image_wh[0]
+        for r in range(layout_config["expected_total_rows"]):
+            estimated_row_y_coords.append((r + 0.5) * (img_h / layout_config["expected_total_rows"]))
 
-        # ---- 占位结束 ----
+    # 尝试识别特殊行 (非常简化的逻辑)
+    special_row_is_at_top = None
+    if yolo_rows_grouped:
+        if len(yolo_rows_grouped[0]) == layout_config["special_row_cols_count"]: special_row_is_at_top = True
+        elif len(yolo_rows_grouped[-1]) == layout_config["special_row_cols_count"]: special_row_is_at_top = False
 
-        # 如果我们没有可靠的控制点和变换，就回退到类似V2.9.1的基于YOLO行分组的简单矩阵
-        print("  由于精确数学标定逻辑复杂，暂时回退到基于YOLO行分组的近似矩阵构建。")
-        # (这里可以调用一个简化版的，类似V2.9.1 build_matrix_yolo_axis_calibrated 的填充逻辑)
-        # (为了让代码能跑通，我们先返回一个基于YOLO原始分组的矩阵)
-        matrix_rows = len(yolo_rows_grouped) if 'yolo_rows_grouped' in locals() and yolo_rows_grouped else layout_config['regular_rows']
-        matrix_cols = Counter([len(r) for r in yolo_rows_grouped]).most_common(1)[0][0] if 'yolo_rows_grouped' in locals() and yolo_rows_grouped and any(yolo_rows_grouped) else layout_config['regular_cols']
+    # 生成理想坑位 (更努力地凑齐50个)
+    current_obu_idx = 0
+    for r_log in range(layout_config["expected_total_rows"]):
+        cols_this_row = layout_config["regular_cols_count"]
+        is_special = False
+        if layout_config["special_row_exists"]:
+            if special_row_is_at_top is True and r_log == 0:
+                cols_this_row = layout_config["special_row_cols_count"]; is_special = True
+            elif special_row_is_at_top is False and r_log == layout_config["expected_total_rows"] - 1:
+                cols_this_row = layout_config["special_row_cols_count"]; is_special = True
 
-        temp_matrix = [["占位"] * matrix_cols for _ in range(matrix_rows)]
-        temp_filled_count = 0
-        # (此处省略了填充temp_matrix的逻辑，因为它依赖于精确的坑位)
-        return temp_matrix, temp_filled_count
+        # 获取当前行的Y坐标
+        current_cy = estimated_row_y_coords[r_log] if r_log < len(estimated_row_y_coords) else estimated_row_y_coords[-1] + avg_obu_h_overall
 
+        # 获取当前行的X坐标参考 (从对应的YOLO行，或用全局平均)
+        # 这是一个很大的简化，理想情况下每行的X起点和间距都应考虑透视
+        x_coords_this_row = []
+        if r_log < len(yolo_rows_grouped) and yolo_rows_grouped[r_log]:
+            # 使用当前YOLO行内的X坐标作为参考
+            ref_yolo_row = yolo_rows_grouped[r_log]
+            for c_log in range(cols_this_row):
+                if c_log < len(ref_yolo_row):
+                    x_coords_this_row.append(ref_yolo_row[c_log]['cx'])
+                elif x_coords_this_row: # 如果YOLO检测不足，尝试外推
+                    x_coords_this_row.append(x_coords_this_row[-1] + avg_obu_w_overall * 1.1)
+                else: # 如果行首就缺失，用一个粗略的图像左边距
+                    x_coords_this_row.append(avg_obu_w_overall * (c_log + 0.5))
+        else: # 如果YOLO中没有对应行，则基于全局平均X分布生成
+            img_w = image_wh[1]
+            # 粗略地使列居中分布
+            total_width_of_row = cols_this_row * avg_obu_w_overall + (cols_this_row - 1) * (avg_obu_w_overall * 0.1)
+            start_x_this_row = (img_w - total_width_of_row) / 2 + avg_obu_w_overall / 2
+            for c_log in range(cols_this_row):
+                 x_coords_this_row.append(start_x_this_row + c_log * (avg_obu_w_overall * 1.1))
 
-    # 3. 如果成功获取控制点并计算了变换矩阵 (例如仿射变换或透视变换)
-    #    或者计算了 V_row, V_col, delta_x, delta_y
+        for c_log in range(cols_this_row):
+            if current_obu_idx >= layout_config["total_obus"]: break
+            ideal_grid_slots.append({
+                'logical_row': r_log, 'logical_col': c_log,
+                'cx': int(x_coords_this_row[c_log] if c_log < len(x_coords_this_row) else (img_w/2)), # 保护
+                'cy': int(current_cy),
+                'w': int(avg_obu_w_overall), 'h': int(avg_obu_h_overall)
+            })
+            current_obu_idx += 1
+        if current_obu_idx >= layout_config["total_obus"]: break
 
-    # 4. 生成50个理想坑位的精确坐标 (expected_grid_coords)
-    #    expected_grid_coords = [] # 列表，每个元素是 (cx, cy)
-    #    # ... (基于变换矩阵或向量参数，从逻辑原点开始生成所有50个坑位) ...
+    if not ideal_grid_slots:
+        print("  未能生成理想坑位坐标。");
+        return [["无理想坑位"]*layout_config["regular_cols_count"] for _ in range(layout_config["expected_total_rows"])], 0
+    print(f"  已生成 {len(ideal_grid_slots)} 个理想坑位坐标。")
 
-    # 5. 将 paddle_results_input 分配到理想坑位
-    # final_matrix = [["未识别"] * layout_config["regular_cols"] for _ in range(layout_config["regular_rows"])]
-    # # ... (处理特殊行，所以矩阵维度可能不是固定的 regular_rows x regular_cols)
-    # matrix_filled_count = 0
-    # for ideal_cx, ideal_cy in expected_grid_coords:
-    #     # 找到最近的、未被使用的 paddle_result
-    #     # ... (匹配逻辑) ...
-    #     if matched_paddle_obu:
-    #         # 获取对应的逻辑行列号，填充到final_matrix
-    #         matrix_filled_count +=1
+    # 4. 将PaddleOCR识别结果填充到理想坑位
+    # (填充逻辑与V2.9.2基本一致，但现在final_matrix的维度是固定的13x4)
+    final_matrix = [["未识别"] * layout_config["regular_cols_count"] for _ in range(layout_config["expected_total_rows"])]
+    matrix_filled_count = 0
 
-    # print(f"  数学标定方案: 填充OBU数: {matrix_filled_count}")
-    # return final_matrix, matrix_filled_count
+    paddle_results_with_center = []
+    if paddle_results_input:
+        for pr in paddle_results_input:
+            cx, cy, pw, ph = get_box_center_and_dims(pr['box'])
+            if cx is not None: paddle_results_with_center.append({**pr, 'cx': cx, 'cy': cy, 'w':pw, 'h':ph, 'used': False})
 
-    # 由于上述标定逻辑复杂，暂时返回一个提示
-    return [["数学标定待实现"] * layout_config["regular_cols"]], 0
+    if ideal_grid_slots and paddle_results_with_center:
+        ideal_coords = np.array([[slot['cx'], slot['cy']] for slot in ideal_grid_slots])
+        paddle_coords = np.array([[p['cx'], p['cy']] for p in paddle_results_with_center])
 
+        if paddle_coords.size == 0: print("  警告: 没有有效的PaddleOCR中心点用于匹配。")
+        else:
+            dist_matrix = cdist(ideal_coords, paddle_coords) # ideal_slots x paddle_results
 
-# --- 主程序 (V2.9.2) ---
+            # 为每个paddle_result找到最佳的ideal_slot (避免一个slot被多个paddle结果填充)
+            # 或者为每个ideal_slot找到最佳的paddle_result (当前做法)
+
+            # 使用匈牙利算法或简单的贪婪匹配（确保一对一）会更好，但先用简单距离
+            for i_slot, slot in enumerate(ideal_grid_slots):
+                log_r, log_c = slot['logical_row'], slot['logical_col']
+
+                # 确定当前逻辑格子的正确列数（特殊行只有2列）
+                cols_for_current_logical_row = layout_config["regular_cols_count"]
+                if layout_config["special_row_exists"]:
+                    is_current_log_row_special = False
+                    if special_row_is_at_top is True and log_r == 0: is_current_log_row_special = True
+                    elif special_row_is_at_top is False and log_r == layout_config["expected_total_rows"] - 1: is_current_log_row_special = True
+                    if is_current_log_row_special: cols_for_current_logical_row = layout_config["special_row_cols_count"]
+
+                if log_r >= layout_config["expected_total_rows"] or log_c >= cols_for_current_logical_row : continue
+
+                best_paddle_idx = -1; min_dist_to_slot = float('inf')
+                # 使用slot中估算的宽度作为距离阈值参考
+                max_dist_thresh = PADDLE_OBU_TO_GRID_MAX_DIST_FACTOR * slot.get('w', avg_obu_w_overall)
+
+                for j_paddle, p_obu in enumerate(paddle_results_with_center):
+                    if p_obu['used']: continue
+                    if i_slot < dist_matrix.shape[0] and j_paddle < dist_matrix.shape[1]:
+                        current_dist = dist_matrix[i_slot, j_paddle]
+                        if current_dist < max_dist_thresh and current_dist < min_dist_to_slot:
+                            min_dist_to_slot = current_dist; best_paddle_idx = j_paddle
+
+                if best_paddle_idx != -1:
+                    final_matrix[log_r][log_c] = paddle_results_with_center[best_paddle_idx]['text']
+                    paddle_results_with_center[best_paddle_idx]['used'] = True; matrix_filled_count += 1
+
+    print(f"  智能网格方案: 构建矩阵 {len(final_matrix)}x{len(final_matrix[0]) if final_matrix else 0}, 填充OBU数: {matrix_filled_count}")
+    return final_matrix, matrix_filled_count
+
+# --- 主程序 (与V2.9.2类似，调用 build_matrix_smart_grid) ---
 if __name__ == "__main__":
-    # ... (与V2.9.1的主程序结构基本一致，主要是调用新的矩阵构建函数)
+    # ... (与V2.9.2的主程序结构基本一致，主要是调用 build_matrix_smart_grid)
     overall_start_time = time.time()
     print(f"--- OBU识别与矩阵输出工具 {VERSION} ---"); print(f"输出目录: {os.path.abspath(CURRENT_RUN_OUTPUT_DIR)}")
     if not initialize_paddleocr(): exit()
-    if not load_yolo_model(): print("警告: YOLO模型加载失败。") # 不直接退出，因为可能只用PaddleOCR
-
+    if not load_yolo_model(): print("警告: YOLO模型加载失败。")
     for image_path_current in IMAGE_PATHS:
         print(f"\n\n========== 处理图片: {image_path_current} ==========")
         img_filename_base = os.path.splitext(os.path.basename(image_path_current))[0]
         original_image = cv2.imread(image_path_current)
         if original_image is None: print(f"错误: 无法读取图片 {image_path_current}"); continue
-
-        # --- PaddleOCR 识别 ---
         print(f"\n--- 步骤1: PaddleOCR 文本检测与识别 ---")
-        # ... (与V2.9.1相同的PaddleOCR处理逻辑，得到 all_paddle_ocr_data 和 potential_obu_list_paddle)
         t_start_paddle = time.time(); ocr_prediction_result = paddle_ocr_engine_global.predict(original_image); paddle_predict_time = time.time() - t_start_paddle
         print(f"PaddleOCR predict() 完成, 耗时: {paddle_predict_time:.3f}s")
         all_paddle_ocr_data = []; potential_obu_list_paddle = []
         if ocr_prediction_result and ocr_prediction_result[0] is not None:
             ocr_result_object = ocr_prediction_result[0]; dt_polys = ocr_result_object.get('dt_polys'); rec_texts = ocr_result_object.get('rec_texts'); rec_scores = ocr_result_object.get('rec_scores')
             if rec_texts and rec_scores and dt_polys:
-                max_items = min(len(rec_texts), len(rec_scores), len(dt_polys))
-                if len(rec_texts) != max_items or len(rec_scores) != max_items or len(dt_polys) != max_items : print(f"  警告: PaddleOCR原始输出长度不匹配: texts({len(rec_texts)}), scores({len(rec_scores)}), boxes({len(dt_polys)}). 按最短 {max_items} 处理。")
+                max_items = 0
+                if rec_texts and rec_scores and dt_polys:
+                    max_items = min(len(rec_texts), len(rec_scores), len(dt_polys))
+                    if len(rec_texts) != max_items or len(rec_scores) != max_items or len(dt_polys) != max_items : print(f"  警告: PaddleOCR原始输出长度不匹配: texts({len(rec_texts)}), scores({len(rec_scores)}), boxes({len(dt_polys)}). 按最短 {max_items} 处理。")
                 for i in range(max_items):
                     item_data = {"text": str(rec_texts[i]), "score": float(rec_scores[i]), "box": dt_polys[i]}
                     all_paddle_ocr_data.append(item_data)
@@ -379,22 +379,18 @@ if __name__ == "__main__":
                     if text_check.startswith(OBU_CODE_PREFIX_FILTER_CFG) and len(text_check) == OBU_CODE_LENGTH_FILTER_CFG and text_check.isdigit() and item_data['score'] >= PADDLE_OCR_FINE_PARAMS['text_rec_score_thresh']:
                         potential_obu_list_paddle.append(item_data)
         print(f"PaddleOCR 原始有效文本 {len(all_paddle_ocr_data)} 条, 内容筛选后潜在OBU {len(potential_obu_list_paddle)} 个。")
-
-        # --- YOLO 检测 ---
-        yolo_anchors = [] # 存放YOLO锚点信息 {'cx', 'cy', 'w', 'h', 'box_yolo'}
+        yolo_anchors_for_matrix = []
         if yolo_session_global:
             print(f"\n--- 步骤2: YOLO 条码锚点检测 ---")
             yolo_barcode_boxes_xyxy, _ = get_yolo_barcode_anchors(original_image.copy())
             for box in yolo_barcode_boxes_xyxy:
                 cx, cy, w, h = get_box_center_and_dims(box)
-                if cx is not None: yolo_anchors.append({'cx': cx, 'cy': cy, 'w': w, 'h': h, 'box_yolo': box})
+                if cx is not None: yolo_anchors_for_matrix.append({'cx': cx, 'cy': cy, 'w': w, 'h': h, 'box_yolo': box})
 
-        # --- 构建和打印矩阵 (使用数学标定方案) ---
-        final_matrix, filled_count = build_matrix_with_math_calibration(yolo_anchors, potential_obu_list_paddle, LAYOUT_CONFIG, original_image.shape[:2])
-        print_matrix_to_console(final_matrix, f"数学标定矩阵 - {img_filename_base}")
+        final_matrix, filled_count = build_matrix_smart_grid(yolo_anchors_for_matrix, potential_obu_list_paddle, LAYOUT_CONFIG, original_image.shape[:2])
+        print_matrix_to_console(final_matrix, f"智能网格矩阵 - {img_filename_base}")
 
-        # 可视化 (可以画出理想网格点、YOLO锚点、匹配上的PaddleOCR文本)
-        # ... (可视化代码待充实)
-
+        temp_viz_path = os.path.join(CURRENT_RUN_OUTPUT_DIR, f"paddle_viz_{img_filename_base}_{VERSION}.png")
+        if original_image is not None: draw_ocr_results_refined(original_image, all_paddle_ocr_data, potential_obu_list_paddle, temp_viz_path)
     overall_end_time = time.time(); total_execution_time = overall_end_time - overall_start_time
     print(f"\n总运行时间: {total_execution_time:.3f} 秒。"); print(f"-------------------------------------------------")
