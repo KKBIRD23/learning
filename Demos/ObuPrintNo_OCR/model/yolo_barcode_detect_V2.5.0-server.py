@@ -30,8 +30,10 @@ DIGIT_ROI_HEIGHT_FACTOR = 0.7    # 示例值：数字区域高度是YOLO框高�
 DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05 # 示例值：左右各扩展2.5%
 
 # --- OCR引擎选择与配置 ---
-OCR_ENGINE_TO_USE = "paddle_ocr_server_paddlex"
+OCR_ENGINE_TO_USE = "paddle_ocr_server_paddlex" # 可选: "paddle_ocr_mobile", "paddle_ocr_server_paddlex"
 SERVER_REC_MODEL_DIR_CFG = r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\model\PaddleOCR\PP-OCRv5_server_rec_infer"
+# 注意：Server检测模型我们不再单独加载，因为YOLO已经完成了ROI检测
+# SERVER_DET_MODEL_DIR_CFG = r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\model\PaddleOCR\PP-OCRv5_server_det_infer"
 MOBILE_OCR_LANG = 'en'
 OCR_PREPROCESS_TYPE_TO_USE = "binary_otsu_digit"
 
