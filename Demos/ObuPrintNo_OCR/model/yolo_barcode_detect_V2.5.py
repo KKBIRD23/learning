@@ -55,7 +55,7 @@ except Exception as e:
 # --- V2.5 配置参数 ---
 VERSION = "v2.5.0_ocr_barcode_integration"
 ONNX_MODEL_PATH = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx"
-IMAGE_NAME = r"./PIC/1.JPG" # 示例图片路径
+IMAGE_NAME = r"../../DATA/PIC/3.jpg" # 示例图片路径
 CONFIDENCE_THRESHOLD = 0.25  # YOLO检测置信度阈值
 IOU_THRESHOLD = 0.45         # NMS的IOU阈值
 
