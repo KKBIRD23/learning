@@ -8,14 +8,18 @@ import traceback
 import paddlex as pdx # For Server OCR
 import re
 
-# --- V2.5.1 配置参数 (Server OCR 优化版 - 基准版本) ---
-VERSION = "v2.5.1_server_only_optimized_baseline" # 标记为基准
+"""
+批量提交图片到模型进行识别
+"""
+
+# --- V2.5.1_server_batch_recognition ---
+VERSION = "v2.5.1_server_batch_recognition" # 新版本号，标明批量处理
 ONNX_MODEL_PATH = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx"
 IMAGE_NAME = r"../../DATA/PIC/3.jpg"
 CONFIDENCE_THRESHOLD = 0.25
 IOU_THRESHOLD = 0.45
 
-ENABLE_TILING = False # 您可以根据需要设为True以启用切块
+ENABLE_TILING = False
 FIXED_TILING_GRID = None
 MIN_IMAGE_DIM_FACTOR_FOR_TILING = 1.5
 TILE_OVERLAP_RATIO = 0.2
@@ -29,11 +33,8 @@ DIGIT_ROI_HEIGHT_FACTOR = 0.7
 DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05
 
 # --- OCR 配置 ---
-# Server OCR识别模型路径
 SERVER_REC_MODEL_DIR_CFG = r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\model\PaddleOCR\PP-OCRv5_server_rec_infer"
-# 识别模型期望的文本行高度 (用于resize预处理)
 TARGET_OCR_INPUT_HEIGHT = 48
-# 送给OCR的预处理类型描述 (实际流程在代码中)
 OCR_PREPROCESS_TO_USE = "binary_otsu_digit"
 
 COCO_CLASSES = ['Barcode']
@@ -47,8 +48,8 @@ try:
     print(f"Initializing PaddleX Recognition Predictor (Server) from: {SERVER_REC_MODEL_DIR_CFG}")
     ocr_server_predictor = pdx.inference.create_predictor(
         model_dir=SERVER_REC_MODEL_DIR_CFG,
-        model_name='PP-OCRv5_server_rec', # 确保这个别名与模型目录内配置一致
-        device='cpu' # 或 'gpu'
+        model_name='PP-OCRv5_server_rec',
+        device='cpu'
     )
     print("PaddleX Server Recognition Predictor initialized successfully.")
 except Exception as e:
@@ -187,7 +188,7 @@ def draw_detections(image, boxes, scores, class_ids, class_names=None, ocr_texts
         if ocr_texts and i < len(ocr_texts) and ocr_texts[i] != "N/A": cv2.putText(img_out,ocr_texts[i],(x1,y1-30),cv2.FONT_HERSHEY_SIMPLEX,0.6,(255,0,0),2)
     return img_out
 
-# --- V2.5.1 主程序 (Server OCR Only, Optimized Preprocessing for OCR) ---
+# --- 主程序 ---
 if __name__ == "__main__":
     t_start_overall = time.time(); timing_profile['0_total_script_execution'] = 0
     print(f"--- OBU 检测与识别工具 {VERSION} ---")
@@ -218,18 +219,17 @@ if __name__ == "__main__":
         if apply_tiling and FIXED_TILING_GRID is not None and \
            isinstance(FIXED_TILING_GRID, tuple) and len(FIXED_TILING_GRID) == 2 and \
            all(isinstance(n, int) and n > 0 for n in FIXED_TILING_GRID):
-            use_fixed_grid_tiling = True
-            print(f"切块处理: 固定网格 {FIXED_TILING_GRID}. 重叠率: {TILE_OVERLAP_RATIO*100}%")
+            use_fixed_grid_tiling = True; print(f"切块处理: 固定网格 {FIXED_TILING_GRID}. 重叠率: {TILE_OVERLAP_RATIO*100}%")
         elif apply_tiling:
             apply_tiling = (orig_img_w > model_input_w_ref * MIN_IMAGE_DIM_FACTOR_FOR_TILING or \
                             orig_img_h > model_input_h_ref * MIN_IMAGE_DIM_FACTOR_FOR_TILING)
             print(f"切块处理: {'动态切块' if apply_tiling else '禁用 (尺寸未达动态切块阈值)'}。"
                   f"参考模型输入: {model_input_h_ref}x{model_input_w_ref}, 重叠率: {TILE_OVERLAP_RATIO*100}%")
-        else:
-            print(f"切块处理已禁用，将执行整图推理。") # Original phrasing
+        else: print(f"切块处理已禁用，将执行整图推理。")
 
         aggregated_boxes, aggregated_scores, aggregated_class_ids = [], [], []
         if apply_tiling:
+            # ... (切块逻辑完整代码) ...
             t_start_tiling_loop = time.time()
             total_inference_time, total_tile_preprocessing_time, total_tile_postprocessing_time, num_tiles_processed = 0,0,0,0
             if use_fixed_grid_tiling:
@@ -296,22 +296,27 @@ if __name__ == "__main__":
             timing_profile['5_area_filtering']=0
             if len(aggregated_boxes)>0: print("面积筛选未启用或不适用。")
 
-        ocr_texts_for_drawing = []
-        recognized_obu_data_list = []
+        # --- BATCH OCR MODIFICATION START ---
+        ocr_texts_for_drawing = ["N/A"] * len(aggregated_boxes) # Initialize with placeholders
+        recognized_obu_data_list = [] # Will store more detailed info per ROI
+
+        images_to_ocr_batch = [] # List to hold all preprocessed ROI images for batch OCR
+        roi_details_for_batch = [] # List to hold corresponding ROI details
 
         if len(aggregated_boxes) > 0:
-            print(f"--- 最终检测到 {len(aggregated_boxes)} 个OBU的YOLO框, 开始精确裁剪数字区域并进行OCR ---"); t_ocr_total_start=time.time()
+            print(f"--- 最终检测到 {len(aggregated_boxes)} 个OBU的YOLO框, 准备进行批量OCR ---")
             for i, yolo_box_coords in enumerate(aggregated_boxes):
                 class_id = int(aggregated_class_ids[i]); class_name_str = class_names[class_id] if class_names and 0 <= class_id < len(class_names) else f"ClassID:{class_id}"
                 x1_yolo, y1_yolo, x2_yolo, y2_yolo = [int(c) for c in yolo_box_coords]; h_yolo = y2_yolo - y1_yolo; w_yolo = x2_yolo - x1_yolo
                 y1_digit_ideal = y1_yolo + int(h_yolo * DIGIT_ROI_Y_OFFSET_FACTOR); h_digit_ideal = int(h_yolo * DIGIT_ROI_HEIGHT_FACTOR); y2_digit_ideal = y1_digit_ideal + h_digit_ideal
                 w_digit_expanded = int(w_yolo * DIGIT_ROI_WIDTH_EXPAND_FACTOR); cx_yolo = x1_yolo + w_yolo / 2.0; x1_digit_ideal = int(cx_yolo - w_digit_expanded / 2.0); x2_digit_ideal = int(cx_yolo + w_digit_expanded / 2.0)
                 y1_d_clip = max(0, y1_digit_ideal); y2_d_clip = min(orig_img_h, y2_digit_ideal); x1_d_clip = max(0, x1_digit_ideal); x2_d_clip = min(orig_img_w, x2_digit_ideal)
-                current_box_info = {"roi_index": i + 1, "class": class_name_str, "bbox_yolo": [x1_yolo, y1_yolo, x2_yolo, y2_yolo], "bbox_digit_ocr": [x1_d_clip, y1_d_clip, x2_d_clip, y2_d_clip], "confidence_yolo": float(aggregated_scores[i]), "ocr_final_text": "N/A", "ocr_confidence": 0.0}
-                print(f"  OBU ROI {current_box_info['roi_index']} (YOLO Box): ... YOLO置信度={current_box_info['confidence_yolo']:.2f}"); print(f"    Calculated Digit ROI for OCR: {current_box_info['bbox_digit_ocr']}")
-                ocr_text_to_draw="N/A"
+
+                current_box_info_temp = {"roi_index": i + 1, "class": class_name_str, "bbox_yolo": [x1_yolo, y1_yolo, x2_yolo, y2_yolo], "bbox_digit_ocr": [x1_d_clip, y1_d_clip, x2_d_clip, y2_d_clip], "confidence_yolo": float(aggregated_scores[i]), "ocr_final_text": "N/A", "ocr_confidence": 0.0}
+                roi_details_for_batch.append(current_box_info_temp) # Store details to match with batch results
+
                 if ocr_server_predictor:
-                    dx1,dy1,dx2,dy2=current_box_info['bbox_digit_ocr']
+                    dx1,dy1,dx2,dy2=current_box_info_temp['bbox_digit_ocr']
                     if dx2>dx1 and dy2>dy1:
                         digit_roi_color=original_image[dy1:dy2,dx1:dx2]
                         h_roi_digit, w_roi_digit = digit_roi_color.shape[:2]
@@ -321,40 +326,106 @@ if __name__ == "__main__":
                             target_w_ocr = int(w_roi_digit * scale_ocr)
                             if target_w_ocr <= 0: target_w_ocr = 1
                             resized_digit_roi_color = cv2.resize(digit_roi_color, (target_w_ocr, TARGET_OCR_INPUT_HEIGHT), interpolation=cv2.INTER_CUBIC if scale_ocr > 1 else cv2.INTER_AREA)
-                            cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_resized_color_h{TARGET_OCR_INPUT_HEIGHT}.png"), resized_digit_roi_color)
+                            # No need to save intermediate images in this loop for batching
                             gray_resized_roi = cv2.cvtColor(resized_digit_roi_color, cv2.COLOR_BGR2GRAY)
-                            cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_resized_gray_h{TARGET_OCR_INPUT_HEIGHT}.png"), gray_resized_roi)
                             _, binary_resized_roi = cv2.threshold(gray_resized_roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                            cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_resized_binary_otsu_h{TARGET_OCR_INPUT_HEIGHT}.png"), binary_resized_roi)
                             image_for_ocr_bgr = cv2.cvtColor(binary_resized_roi, cv2.COLOR_GRAY2BGR)
-                        if image_for_ocr_bgr is not None and image_for_ocr_bgr.size > 0:
-                            print(f"    Attempting OCR with Server model (resized, otsu) for Digit ROI {current_box_info['roi_index']}...")
-                            try:
-                                raw_recognized_text = ""; ocr_score = 0.0
-                                rec_results_generator = ocr_server_predictor.predict([image_for_ocr_bgr.copy()])
-                                recognition_result_dict = None
-                                try: recognition_result_dict = next(rec_results_generator)
-                                except StopIteration: pass
-                                if isinstance(recognition_result_dict, dict):
-                                    raw_recognized_text = recognition_result_dict.get('rec_text', ""); ocr_score = recognition_result_dict.get('rec_score', 0.0)
-                                if raw_recognized_text:
-                                    digits_only_text = "".join(re.findall(r'\d', raw_recognized_text))
-                                    print(f"      OCR Server Result: Raw='{raw_recognized_text}', Digits='{digits_only_text}', Score={ocr_score:.2f}")
-                                    if digits_only_text: ocr_text_to_draw = digits_only_text; current_box_info["ocr_final_text"]=digits_only_text; current_box_info["ocr_confidence"]=ocr_score
-                                    else: print(f"      OCR Server: No digits extracted from '{raw_recognized_text}'.")
-                                else: print(f"      OCR Server: No raw text recognized.")
-                            except Exception as ocr_e: print(f"      Error during Server OCR: {ocr_e}")
-                        else: print(f"    Skipping OCR for ROI {current_box_info['roi_index']} due to invalid preprocessed image.")
-                    else: print(f"    Skipping OCR for invalid/zero-size Digit ROI.")
-                else: print(f"    PaddleX Server OCR Predictor not initialized. Skipping OCR.")
-                recognized_obu_data_list.append(current_box_info); ocr_texts_for_drawing.append(ocr_text_to_draw); print("-" * 30)
 
-            timing_profile['7_ocr_processing_total']=time.time()-t_ocr_total_start; print(f"--- 所有ROI的OCR处理完成 ({timing_profile['7_ocr_processing_total']:.3f} 秒) ---")
+                        if image_for_ocr_bgr is not None and image_for_ocr_bgr.size > 0:
+                            images_to_ocr_batch.append(image_for_ocr_bgr.copy())
+                            # Save preprocessed image for debugging if needed (can be done outside loop or selectively)
+                            # cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info_temp['roi_index']:03d}_preprocessed_for_batch.png"), image_for_ocr_bgr)
+                        else:
+                            images_to_ocr_batch.append(None) # Add a placeholder for failed preprocessing
+                            print(f"    Skipping ROI {current_box_info_temp['roi_index']} for batch due to invalid preprocessed image.")
+                    else:
+                        images_to_ocr_batch.append(None)
+                        print(f"    Skipping ROI {current_box_info_temp['roi_index']} for batch due to invalid/zero-size Digit ROI.")
+                else:
+                    images_to_ocr_batch.append(None)
+                    print(f"    PaddleX Server OCR Predictor not initialized. Skipping ROI {current_box_info_temp['roi_index']} for batch.")
+
+            # Perform batch OCR if there are images to process
+            if any(img is not None for img in images_to_ocr_batch) and ocr_server_predictor:
+                print(f"\n--- Attempting BATCH OCR with Server model for {sum(1 for img in images_to_ocr_batch if img is not None)} ROIs ---")
+                t_ocr_batch_start = time.time()
+
+                # Filter out None placeholders before sending to predict
+                valid_images_for_batch = [img for img in images_to_ocr_batch if img is not None]
+                indices_of_valid_images = [idx for idx, img in enumerate(images_to_ocr_batch) if img is not None]
+
+                batch_ocr_results = []
+                if valid_images_for_batch:
+                    try:
+                        # The predict method returns a generator, convert to list to get all results
+                        batch_ocr_results_gen = ocr_server_predictor.predict(valid_images_for_batch)
+                        batch_ocr_results = list(batch_ocr_results_gen)
+                    except Exception as batch_ocr_e:
+                        print(f"      Error during BATCH Server OCR: {batch_ocr_e}")
+                        traceback.print_exc()
+
+                timing_profile['7_ocr_processing_total'] = time.time() - t_ocr_batch_start
+                print(f"--- BATCH OCR processing finished ({timing_profile['7_ocr_processing_total']:.3f} 秒) ---")
+
+                # Match batch results back to original ROIs
+                result_idx = 0
+                for original_idx in range(len(images_to_ocr_batch)):
+                    current_box_info = roi_details_for_batch[original_idx] # Get the stored details
+                    ocr_text_to_draw = "N/A"
+                    if images_to_ocr_batch[original_idx] is not None and result_idx < len(batch_ocr_results):
+                        # The result for a single image from PaddleX recognizer is a list of dicts (usually one dict for one line)
+                        recognition_result_list_for_roi = batch_ocr_results[result_idx]
+                        raw_recognized_text = ""
+                        ocr_score = 0.0
+
+                        if isinstance(recognition_result_list_for_roi, list) and len(recognition_result_list_for_roi) > 0:
+                            # Assuming the first (and likely only) dict in the list is our result for the text line
+                            recognition_result_dict = recognition_result_list_for_roi[0]
+                            if isinstance(recognition_result_dict, dict):
+                                raw_recognized_text = recognition_result_dict.get('rec_text', "")
+                                ocr_score = recognition_result_dict.get('rec_score', 0.0)
+                        elif isinstance(recognition_result_list_for_roi, dict): # Older PaddleX might return a single dict
+                             raw_recognized_text = recognition_result_list_for_roi.get('rec_text', "")
+                             ocr_score = recognition_result_list_for_roi.get('rec_score', 0.0)
+
+
+                        if raw_recognized_text:
+                            digits_only_text = "".join(re.findall(r'\d', raw_recognized_text))
+                            print(f"  ROI {current_box_info['roi_index']} OCR Server Result: Raw='{raw_recognized_text}', Digits='{digits_only_text}', Score={ocr_score:.2f}")
+                            if digits_only_text:
+                                ocr_text_to_draw = digits_only_text
+                                current_box_info["ocr_final_text"] = digits_only_text
+                                current_box_info["ocr_confidence"] = ocr_score
+                            else:
+                                print(f"    OCR Server: No digits extracted from '{raw_recognized_text}'.")
+                        else:
+                            print(f"  ROI {current_box_info['roi_index']} OCR Server: No raw text recognized.")
+                        result_idx += 1
+
+                    ocr_texts_for_drawing[original_idx] = ocr_text_to_draw
+                    recognized_obu_data_list.append(current_box_info) # Add full details
+                    # print("-" * 30) # Moved out of individual ROI processing for batch
+            else:
+                print("No valid images preprocessed for batch OCR, or OCR predictor not available.")
+                timing_profile['7_ocr_processing_total'] = 0
+                # Populate recognized_obu_data_list with N/A if no OCR was run
+                if not recognized_obu_data_list: # If it's still empty
+                    recognized_obu_data_list = roi_details_for_batch
+
+
             print("\n--- 初步识别结果列表 (未映射到矩阵) ---");
-            for obu_data in recognized_obu_data_list:
+            for obu_data in recognized_obu_data_list: # This list now has all ROIs
                 if obu_data["ocr_final_text"]!="N/A": print(f"ROI {obu_data['roi_index']} (YOLO BBox: {obu_data['bbox_yolo']}): Digit OCR Text = {obu_data['ocr_final_text']}")
             print("---------------------------------------\n")
-            t_start_drawing=time.time(); output_img_to_draw_on=original_image.copy(); output_img_to_draw_on=draw_detections(output_img_to_draw_on,np.array(aggregated_boxes),np.array(aggregated_scores),np.array(aggregated_class_ids),class_names,ocr_texts=ocr_texts_for_drawing,roi_indices=[item["roi_index"] for item in recognized_obu_data_list]); timing_profile['8_drawing_results_final']=time.time()-t_start_drawing; output_fn_base=os.path.splitext(os.path.basename(IMAGE_NAME))[0]; final_output_image_name = f"final_annotated_{output_fn_base}_{VERSION}.png"; final_output_path = os.path.join(process_photo_dir, final_output_image_name);cv2.imwrite(final_output_path, output_img_to_draw_on); print(f"最终结果图已保存到: {final_output_path} ({timing_profile['8_drawing_results_final']:.2f} 秒用于绘图)")
+
+            t_start_drawing=time.time(); output_img_to_draw_on=original_image.copy();
+            output_img_to_draw_on=draw_detections(output_img_to_draw_on,np.array(aggregated_boxes),np.array(aggregated_scores),np.array(aggregated_class_ids),class_names,ocr_texts=ocr_texts_for_drawing,roi_indices=[item["roi_index"] for item in recognized_obu_data_list]);
+            timing_profile['8_drawing_results_final']=time.time()-t_start_drawing;
+            output_fn_base=os.path.splitext(os.path.basename(IMAGE_NAME))[0];
+            final_output_image_name = f"final_annotated_{output_fn_base}_{VERSION}.png";
+            final_output_path = os.path.join(process_photo_dir, final_output_image_name);
+            cv2.imwrite(final_output_path, output_img_to_draw_on);
+            print(f"最终结果图已保存到: {final_output_path} ({timing_profile['8_drawing_results_final']:.2f} 秒用于绘图)")
         else:
             print("最终未检测到任何OBU ROI，无法进行OCR。"); timing_profile['7_ocr_processing_total']=0; timing_profile['8_drawing_results_final']=0
     except FileNotFoundError as e: print(e)
