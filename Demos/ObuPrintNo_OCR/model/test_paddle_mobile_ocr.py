@@ -9,8 +9,12 @@ import paddle
 import paddleocr # 确保导入
 import re
 
-# --- V2.5.19 配置参数 (Mobile OCR, Padded ROI to Predict) ---
-VERSION = "v2.5.19_mobile_ocr_padded_roi"
+"""
+只做切片，不做图像优化，把图像优化交给mobile自己去处理
+"""
+
+# --- V2.5.20 配置参数 (Mobile OCR, Padded COLOR ROI to Predict) ---
+VERSION = "v2.5.20_mobile_ocr_padded_color_roi" # 新版本号
 ONNX_MODEL_PATH = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx"
 IMAGE_NAME = r"../../DATA/PIC/3.jpg"
 CONFIDENCE_THRESHOLD = 0.25
@@ -51,14 +55,8 @@ except Exception as e_init:
     paddle_ocr_engine = None
 
 
-TARGET_OCR_INPUT_HEIGHT = 48 # Our script's target height for the ROI before potential padding
-# PADDING_TARGET_DIM = 320 # Target dimension for padding (e.g., make it roughly square or a fixed larger height)
-PADDING_STRATEGY = "MIN_SIDE_AS_WIDTH" # "SQUARE_BY_WIDTH", "FIXED_HEIGHT_PAD", "MIN_SIDE_AS_WIDTH"
-# If FIXED_HEIGHT_PAD, this will be the target height after padding
-PADDING_FIXED_TARGET_HEIGHT = 256
-
-
-OCR_PREPROCESS_DESCRIPTION = "Padded Binary ROI sent to predict"
+TARGET_OCR_INPUT_HEIGHT = 48 # Our script's target height for the ROI before padding
+OCR_PREPROCESS_DESCRIPTION = "Padded COLOR Resized ROI sent to predict" # Updated description
 COCO_CLASSES = ['Barcode']
 timing_profile = {}
 process_photo_dir = "process_photo"
@@ -242,6 +240,7 @@ if __name__ == "__main__":
 
         aggregated_boxes, aggregated_scores, aggregated_class_ids = [], [], []
         if apply_tiling:
+            # (切块逻辑与 server 版完全一致)
             t_start_tiling_loop = time.time()
             total_inference_time, total_tile_preprocessing_time, total_tile_postprocessing_time, num_tiles_processed = 0,0,0,0
             if use_fixed_grid_tiling:
@@ -334,83 +333,43 @@ if __name__ == "__main__":
                 if paddle_ocr_engine:
                     dx1,dy1,dx2,dy2=current_box_info['bbox_digit_ocr']
                     if dx2>dx1 and dy2>dy1:
-                        digit_roi_color_original = original_image[dy1:dy2,dx1:dx2].copy() # Original color ROI
+                        digit_roi_color_original = original_image[dy1:dy2,dx1:dx2].copy()
 
-                        # --- START: PADDING STRATEGY ---
+                        # --- EXPERIMENT 3: Only Resize to H=48 (Color), then Pad ---
                         h_roi, w_roi = digit_roi_color_original.shape[:2]
+                        image_for_ocr_bgr = None
 
-                        # First, apply the standard preprocessing (resize to TARGET_OCR_INPUT_HEIGHT, gray, binary)
-                        # This is what test_paddle_server_ocr.py does before sending to its recognizer.
-                        scale_ocr = TARGET_OCR_INPUT_HEIGHT / h_roi
-                        target_w_ocr = int(w_roi * scale_ocr)
-                        if target_w_ocr <= 0: target_w_ocr = 1
+                        if h_roi > 0 and w_roi > 0:
+                            # 1. Resize to TARGET_OCR_INPUT_HEIGHT (color image)
+                            scale_ocr = TARGET_OCR_INPUT_HEIGHT / h_roi
+                            target_w_ocr = int(w_roi * scale_ocr)
+                            if target_w_ocr <= 0: target_w_ocr = 1
 
-                        resized_digit_roi_color = cv2.resize(digit_roi_color_original, (target_w_ocr, TARGET_OCR_INPUT_HEIGHT),
-                                                             interpolation=cv2.INTER_CUBIC if scale_ocr > 1 else cv2.INTER_AREA)
-                        gray_resized_roi = cv2.cvtColor(resized_digit_roi_color, cv2.COLOR_BGR2GRAY)
-                        _, binary_resized_roi = cv2.threshold(gray_resized_roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                            resized_digit_roi_color = cv2.resize(digit_roi_color_original, (target_w_ocr, TARGET_OCR_INPUT_HEIGHT),
+                                                                 interpolation=cv2.INTER_CUBIC if scale_ocr > 1 else cv2.INTER_AREA)
 
-                        # Now, apply padding to the binary_resized_roi
-                        h_bin, w_bin = binary_resized_roi.shape # Should be (TARGET_OCR_INPUT_HEIGHT, target_w_ocr)
+                            # 2. Padding (on the resized color image)
+                            h_resized, w_resized = resized_digit_roi_color.shape[:2] # Should be (TARGET_OCR_INPUT_HEIGHT, target_w_ocr)
 
-                        padded_height = 0
-                        if PADDING_STRATEGY == "SQUARE_BY_WIDTH":
-                            padded_height = w_bin # Make height equal to width
-                        elif PADDING_STRATEGY == "FIXED_HEIGHT_PAD":
-                            padded_height = PADDING_FIXED_TARGET_HEIGHT
-                        elif PADDING_STRATEGY == "MIN_SIDE_AS_WIDTH": # Make width the 'shorter' side for PaddleOCR's scaling
-                            # We want H_padded / W_bin > 1 (approx) so W_bin becomes short side
-                            # or H_padded is large enough that W_bin * (736/H_padded) is small
-                            # Let's try to make H_padded such that W_bin is treated as the short side,
-                            # or if W_bin is already very large, make H_padded larger.
-                            # This strategy aims to make the width (w_bin) the side that gets scaled to det_limit_side_len if possible.
-                            # If w_bin is already > det_limit_side_len, this won't help that specific scaling.
-                            # A simpler approach: pad height to be at least equal to width.
-                            padded_height = max(h_bin, w_bin, int(w_bin * 0.8)) # Ensure height is substantial
-                            if w_bin > h_bin * 5 : # If very wide, make height at least 1/3 of width
-                                padded_height = max(h_bin, int(w_bin / 3))
-                            else: # Default to making it squarish or slightly taller
-                                padded_height = max(h_bin, w_bin)
-                            padded_height = max(padded_height, TARGET_OCR_INPUT_HEIGHT) # Ensure min height
+                            final_canvas_h = max(h_resized, w_resized)
+                            final_canvas_h = max(final_canvas_h, h_resized) # ensure it's at least original height (already is)
 
-                        # Ensure padded_height is at least the binary image's height
-                        padded_height = max(padded_height, h_bin)
+                            # Create canvas (black background for color image)
+                            # Image will be pasted at the top_center of this canvas
+                            # Canvas needs 3 channels for color image
+                            padded_image_bgr = np.zeros((final_canvas_h, w_resized, 3), dtype=np.uint8)
 
+                            y_offset = 0
+                            x_offset = 0
 
-                        # Create a black canvas for padding
-                        # Pad to make the image taller, hoping width becomes the 'short side' for det_limit_side_len logic
-                        # or that the aspect ratio is more favorable.
-                        # Let's try padding to make the image square based on its width, or a fixed larger height.
-                        # For example, make the image H_final x W_bin where H_final >= W_bin or H_final is large.
+                            padded_image_bgr[y_offset:y_offset + h_resized, x_offset:x_offset + w_resized] = resized_digit_roi_color
 
-                        # Strategy: Pad to make height at least equal to width, or a fixed large height
-                        # This makes width the 'short side' if H_padded > W_bin
-                        # Or if H_padded < W_bin, H_padded is short side, but W_bin * (736/H_padded) might be < max_side_limit
-
-                        # Let's try a simple padding: make the image square using the width.
-                        # If width is very large, this might be too much.
-                        # Alternative: pad height to a fixed moderately large value e.g. 256 or 320
-
-                        final_canvas_h = max(h_bin, w_bin) # Make it square based on width
-                        # final_canvas_h = PADDING_FIXED_TARGET_HEIGHT # Alternative: fixed padding height
-                        final_canvas_h = max(final_canvas_h, h_bin) # ensure it's at least original height
-
-                        # Create canvas (black background)
-                        # Image will be pasted at the top_center of this canvas
-                        padded_image_gray = np.zeros((final_canvas_h, w_bin), dtype=np.uint8)
-
-                        # Calculate paste position (top-center)
-                        y_offset = 0 # Paste at top
-                        x_offset = 0 # Already same width
-
-                        padded_image_gray[y_offset:y_offset + h_bin, x_offset:x_offset + w_bin] = binary_resized_roi
-
-                        image_for_ocr_bgr = cv2.cvtColor(padded_image_gray, cv2.COLOR_GRAY2BGR)
-                        # --- END: PADDING STRATEGY ---
+                            image_for_ocr_bgr = padded_image_bgr # This is now the padded color image
+                        # --- END: PADDING STRATEGY ON RESIZED COLOR IMAGE ---
 
                         if image_for_ocr_bgr is not None and image_for_ocr_bgr.size > 0:
-                            cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_padded_for_ocr.png"), image_for_ocr_bgr)
-                            print(f"    Attempting OCR with PaddleOCR predict() on PADDED Digit ROI {current_box_info['roi_index']} (Shape: {image_for_ocr_bgr.shape})...")
+                            cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_resized_color_padded_for_ocr.png"), image_for_ocr_bgr)
+                            print(f"    Attempting OCR with PaddleOCR predict() on RESIZED COLOR PADDED Digit ROI {current_box_info['roi_index']} (Shape: {image_for_ocr_bgr.shape})...")
                             try:
                                 raw_recognized_text = ""; ocr_score = 0.0
                                 result_prediction = paddle_ocr_engine.predict(image_for_ocr_bgr.copy())

@@ -1,22 +1,21 @@
+# coding: utf-8
 import cv2
 import numpy as np
 import onnxruntime
 import os
 import time
 import traceback
-# import paddle # PaddleX 会处理 PaddlePaddle 的依赖
-# import paddleocr # 不再需要直接导入 paddleocr
-import paddlex as pdx
+import paddlex as pdx # For Server OCR
 import re
 
-# --- V2.5.1 配置参数 (Server OCR 优化版) ---
-VERSION = "v2.5.1_server_only_optimized"
+# --- V2.5.1 配置参数 (Server OCR 优化版 - 基准版本) ---
+VERSION = "v2.5.1_server_only_optimized_baseline" # 标记为基准
 ONNX_MODEL_PATH = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx"
-IMAGE_NAME = r"../../DATA/PIC/3.jpg" # 请确保路径相对于脚本执行位置正确
+IMAGE_NAME = r"../../DATA/PIC/3.jpg"
 CONFIDENCE_THRESHOLD = 0.25
 IOU_THRESHOLD = 0.45
 
-ENABLE_TILING = False
+ENABLE_TILING = False # 您可以根据需要设为True以启用切块
 FIXED_TILING_GRID = None
 MIN_IMAGE_DIM_FACTOR_FOR_TILING = 1.5
 TILE_OVERLAP_RATIO = 0.2
@@ -34,13 +33,13 @@ DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05
 SERVER_REC_MODEL_DIR_CFG = r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\model\PaddleOCR\PP-OCRv5_server_rec_infer"
 # 识别模型期望的文本行高度 (用于resize预处理)
 TARGET_OCR_INPUT_HEIGHT = 48
-# 送给OCR的预处理类型 (目前固定为otsu，您可以根据需要改回 "all" 或列表)
+# 送给OCR的预处理类型描述 (实际流程在代码中)
 OCR_PREPROCESS_TO_USE = "binary_otsu_digit"
 
 COCO_CLASSES = ['Barcode']
 
 timing_profile = {}
-process_photo_dir = "process_photo" # 使用新的过程图片目录
+process_photo_dir = "process_photo"
 
 # --- PaddleX Server OCR识别引擎初始化 ---
 ocr_server_predictor = None
@@ -48,16 +47,16 @@ try:
     print(f"Initializing PaddleX Recognition Predictor (Server) from: {SERVER_REC_MODEL_DIR_CFG}")
     ocr_server_predictor = pdx.inference.create_predictor(
         model_dir=SERVER_REC_MODEL_DIR_CFG,
-        model_name='PP-OCRv5_server_rec',
-        device='cpu'
+        model_name='PP-OCRv5_server_rec', # 确保这个别名与模型目录内配置一致
+        device='cpu' # 或 'gpu'
     )
     print("PaddleX Server Recognition Predictor initialized successfully.")
 except Exception as e:
     print(f"Error initializing PaddleX Server Recognition Predictor: {e}"); traceback.print_exc()
-    ocr_server_predictor = None # 确保初始化失败时为None
+    ocr_server_predictor = None
 
-# --- 辅助函数定义 (与之前版本一致或略作调整) ---
-def clear_process_photo_directory(directory): # 函数名保持一致
+# --- 辅助函数定义 ---
+def clear_process_photo_directory(directory):
     if os.path.exists(directory):
         for filename in os.listdir(directory):
             file_path = os.path.join(directory, filename)
@@ -121,11 +120,9 @@ def preprocess_onnx_for_main(img_data, target_shape_hw):
     new_w, new_h = int(img_width_orig * ratio), int(img_height_orig * ratio)
     resized_img = cv2.resize(img_data, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
     canvas = np.full((target_h, target_w, 3), 128, dtype=np.uint8)
-    pad_x = (target_w - new_w) // 2 # <--- pad_x 在这里定义
+    pad_x = (target_w - new_w) // 2
     pad_y = (target_h - new_h) // 2
-    # --- 修改：将 x_pad 改为 pad_x ---
     canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized_img
-    # --- 结束修改 ---
     input_tensor = canvas.transpose(2, 0, 1).astype(np.float32) / 255.0
     input_tensor = np.expand_dims(input_tensor, axis=0)
     return input_tensor, ratio, pad_x, pad_y
@@ -133,34 +130,28 @@ def preprocess_onnx_for_main(img_data, target_shape_hw):
 def postprocess_yolo_onnx_for_main(outputs_onnx, conf_threshold, iou_threshold,
                                    original_shape_hw, model_input_shape_hw,
                                    ratio_preproc, pad_x_preproc, pad_y_preproc,
-                                   num_classes=1): # num_classes is now derived from len(COCO_CLASSES)
+                                   num_classes=1):
     raw_output_tensor = np.squeeze(outputs_onnx[0]);
     if raw_output_tensor.ndim != 2: print(f"错误: Main Squeezed ONNX output is not 2D. Shape: {raw_output_tensor.shape}"); return []
     predictions_to_iterate = raw_output_tensor.transpose() if raw_output_tensor.shape[0] < raw_output_tensor.shape[1] else raw_output_tensor
     boxes_candidate, scores_candidate, class_ids_candidate = [], [], []
-
-    # Determine expected_attributes based on the actual shape of pred_data
-    # This makes it more robust if the ONNX model output attributes change slightly
-    if predictions_to_iterate.shape[1] == 5 and num_classes == 1:
-        expected_attributes = 5
-    elif predictions_to_iterate.shape[1] == (4 + 1 + num_classes) : # Standard YOLO output: box, obj, classes
+    expected_attributes = 5
+    if predictions_to_iterate.shape[1] == (4 + 1 + num_classes) and num_classes > 1 :
         expected_attributes = 4 + 1 + num_classes
-    else:
-        print(f"警告: 预测属性数量 {predictions_to_iterate.shape[1]} 与常见模式不符 (5 or 4+1+num_classes={4+1+num_classes}). 将按5属性尝试。")
-        expected_attributes = 5 # Fallback to 5 for BarCode_Detect.onnx
+    elif predictions_to_iterate.shape[1] != 5 and num_classes == 1:
+        print(f"警告: 预测属性数量 {predictions_to_iterate.shape[1]} 与单类别期望值 5 不符. 将按5属性尝试。")
 
     for i_pred, pred_data in enumerate(predictions_to_iterate):
         if len(pred_data) != expected_attributes:
             if i_pred == 0: print(f"错误: Main 每个预测的属性数量 ({len(pred_data)}) 与期望值 ({expected_attributes}) 不符。")
             continue
-
         box_coords_raw = pred_data[:4]; final_confidence = 0.0; class_id = 0
-        if expected_attributes == 5: # cx,cy,w,h,combined_score
+        if expected_attributes == 5:
             final_confidence = float(pred_data[4])
-        elif expected_attributes == 6 and num_classes == 1: # cx,cy,w,h,obj_score,class_score_for_single_class
+        elif expected_attributes == 6 and num_classes == 1:
             objectness = float(pred_data[4]); class_score_single = float(pred_data[5])
             final_confidence = objectness * class_score_single
-        else: # General multi-class case (4 + 1 obj_score + N class_scores)
+        else:
             objectness = float(pred_data[4])
             class_scores_all = pred_data[5:]
             if len(class_scores_all) == num_classes:
@@ -169,8 +160,7 @@ def postprocess_yolo_onnx_for_main(outputs_onnx, conf_threshold, iou_threshold,
                 final_confidence = objectness * max_class_score
             else:
                 if i_pred == 0: print(f"错误: 类别分数数量 ({len(class_scores_all)}) 与 num_classes ({num_classes}) 不符。")
-                continue # Skip this prediction
-
+                continue
         if final_confidence >= float(conf_threshold):
             cx, cy, w, h = box_coords_raw; x1,y1,x2,y2 = cx-w/2,cy-h/2,cx+w/2,cy+h/2
             boxes_candidate.append([x1,y1,x2,y2]); scores_candidate.append(final_confidence); class_ids_candidate.append(class_id)
@@ -204,7 +194,7 @@ if __name__ == "__main__":
     clear_process_photo_directory(process_photo_dir); print(f"'{process_photo_dir}' 文件夹已清理。")
     if not os.path.exists(ONNX_MODEL_PATH): print(f"错误: 模型未找到: {ONNX_MODEL_PATH}"); exit()
     if not os.path.exists(IMAGE_NAME): print(f"错误: 图片未找到: {IMAGE_NAME}"); exit()
-    if ocr_server_predictor is None : print(f"错误: PaddleX Server OCR未能初始化。请检查模型路径和依赖。"); exit() # 检查Server OCR引擎
+    if ocr_server_predictor is None : print(f"错误: PaddleX Server OCR未能初始化。请检查模型路径和依赖。"); exit()
 
     actual_max_area_threshold_px = None
     try:
@@ -213,7 +203,6 @@ if __name__ == "__main__":
         model_input_h_ref, model_input_w_ref = 640, 640
         if len(input_shape_onnx) == 4 and isinstance(input_shape_onnx[2], int) and isinstance(input_shape_onnx[3], int): model_input_h_ref, model_input_w_ref = input_shape_onnx[2], input_shape_onnx[3]
         else: print(f"警告: 模型输入维度包含符号名称: {input_shape_onnx}. 使用参考尺寸 H={model_input_h_ref}, W={model_input_w_ref}")
-        # class_names 在顶部配置区已定义为 ['Barcode']
         class_names = COCO_CLASSES
         print(f"模型输入: {input_name} {input_shape_onnx}. 类别设置为: {class_names}")
         t_start_img_read = time.time(); original_image = cv2.imread(IMAGE_NAME); timing_profile['2_image_reading'] = time.time() - t_start_img_read
@@ -224,22 +213,84 @@ if __name__ == "__main__":
             elif isinstance(MAX_DETECTION_AREA, (int,float)) and MAX_DETECTION_AREA > 1: actual_max_area_threshold_px = float(MAX_DETECTION_AREA); print(f"MAX_DETECTION_AREA设为绝对值: {actual_max_area_threshold_px:.0f} px².")
             else: actual_max_area_threshold_px = None
 
-        # --- V2.5.1 强制使用整图推理 ---
-        apply_tiling = False # ENABLE_TILING 在顶部设为False，这里再次确认
-        print(f"切块处理已禁用，将执行整图推理。")
+        apply_tiling = ENABLE_TILING
+        use_fixed_grid_tiling = False
+        if apply_tiling and FIXED_TILING_GRID is not None and \
+           isinstance(FIXED_TILING_GRID, tuple) and len(FIXED_TILING_GRID) == 2 and \
+           all(isinstance(n, int) and n > 0 for n in FIXED_TILING_GRID):
+            use_fixed_grid_tiling = True
+            print(f"切块处理: 固定网格 {FIXED_TILING_GRID}. 重叠率: {TILE_OVERLAP_RATIO*100}%")
+        elif apply_tiling:
+            apply_tiling = (orig_img_w > model_input_w_ref * MIN_IMAGE_DIM_FACTOR_FOR_TILING or \
+                            orig_img_h > model_input_h_ref * MIN_IMAGE_DIM_FACTOR_FOR_TILING)
+            print(f"切块处理: {'动态切块' if apply_tiling else '禁用 (尺寸未达动态切块阈值)'}。"
+                  f"参考模型输入: {model_input_h_ref}x{model_input_w_ref}, 重叠率: {TILE_OVERLAP_RATIO*100}%")
+        else:
+            print(f"切块处理已禁用，将执行整图推理。") # Original phrasing
 
         aggregated_boxes, aggregated_scores, aggregated_class_ids = [], [], []
-        print("--- 开始整图检测 (使用新ONNX模型适配的预处理和后处理) ---"); t_s = time.time(); input_tensor, ratio_main, pad_x_main, pad_y_main = preprocess_onnx_for_main(original_image, (model_input_h_ref, model_input_w_ref)); timing_profile['3a_fullimg_preprocessing'] = time.time() - t_s; t_s = time.time(); outputs_main = session.run(None, {input_name: input_tensor}); timing_profile['3b_fullimg_inference'] = time.time() - t_s;
-        detections_result_list = postprocess_yolo_onnx_for_main(outputs_main, CONFIDENCE_THRESHOLD, IOU_THRESHOLD, original_image.shape[:2], (model_input_h_ref, model_input_w_ref), ratio_main, pad_x_main, pad_y_main, num_classes=len(class_names)); timing_profile['3c_fullimg_postprocessing'] = time.time() - t_s
-        aggregated_boxes = [[d[0], d[1], d[2], d[3]] for d in detections_result_list]; aggregated_scores = [d[4] for d in detections_result_list]; aggregated_class_ids = [d[5] for d in detections_result_list]; print(f"整图处理与后处理完成。找到了 {len(aggregated_boxes)} 个框。")
+        if apply_tiling:
+            t_start_tiling_loop = time.time()
+            total_inference_time, total_tile_preprocessing_time, total_tile_postprocessing_time, num_tiles_processed = 0,0,0,0
+            if use_fixed_grid_tiling:
+                num_cols, num_rows = FIXED_TILING_GRID
+                nominal_tile_w = orig_img_w / num_cols; nominal_tile_h = orig_img_h / num_rows
+                overlap_w_px = int(nominal_tile_w * TILE_OVERLAP_RATIO); overlap_h_px = int(nominal_tile_h * TILE_OVERLAP_RATIO)
+                for r_idx in range(num_rows):
+                    for c_idx in range(num_cols):
+                        num_tiles_processed += 1
+                        stride_x = nominal_tile_w if num_cols == 1 else (nominal_tile_w - overlap_w_px); stride_y = nominal_tile_h if num_rows == 1 else (nominal_tile_h - overlap_h_px)
+                        current_tile_x0 = int(c_idx * stride_x); current_tile_y0 = int(r_idx * stride_y)
+                        current_tile_x1 = int(current_tile_x0 + nominal_tile_w); current_tile_y1 = int(current_tile_y0 + nominal_tile_h)
+                        tile_crop_x0 = max(0, current_tile_x0); tile_crop_y0 = max(0, current_tile_y0)
+                        tile_crop_x1 = min(orig_img_w, current_tile_x1); tile_crop_y1 = min(orig_img_h, current_tile_y1)
+                        tile_data = original_image[tile_crop_y0:tile_crop_y1, tile_crop_x0:tile_crop_x1]
+                        tile_h_curr, tile_w_curr = tile_data.shape[:2]
+                        if tile_h_curr == 0 or tile_w_curr == 0 or tile_h_curr < model_input_h_ref * 0.1 or tile_w_curr < model_input_w_ref * 0.1: continue
+                        t_s = time.time(); tensor, ratio, pad_x, pad_y = preprocess_image_data_for_tiling(tile_data, (model_input_h_ref, model_input_w_ref)); total_tile_preprocessing_time += time.time() - t_s
+                        t_s = time.time(); outputs = session.run(None, {input_name: tensor}); total_inference_time += time.time() - t_s
+                        t_s = time.time(); boxes_np, scores_np, c_ids_np = postprocess_detections_from_tile(outputs, (tile_h_curr, tile_w_curr), (model_input_h_ref, model_input_w_ref),ratio, pad_x, pad_y, CONFIDENCE_THRESHOLD, 0); total_tile_postprocessing_time += time.time() - t_s
+                        if boxes_np.shape[0] > 0:
+                            for i_box_tile in range(boxes_np.shape[0]): b = boxes_np[i_box_tile]; aggregated_boxes.append([b[0] + tile_crop_x0, b[1] + tile_crop_y0, b[2] + tile_crop_x0, b[3] + tile_crop_y0]); aggregated_scores.append(scores_np[i_box_tile]); aggregated_class_ids.append(c_ids_np[i_box_tile])
+            else: # Dynamic Tiling
+                tile_w_dyn, tile_h_dyn = model_input_w_ref, model_input_h_ref
+                overlap_w_dyn, overlap_h_dyn = int(tile_w_dyn * TILE_OVERLAP_RATIO), int(tile_h_dyn * TILE_OVERLAP_RATIO)
+                stride_w_dyn, stride_h_dyn = tile_w_dyn - overlap_w_dyn, tile_h_dyn - overlap_h_dyn
+                for y0_dyn in range(0, orig_img_h, stride_h_dyn):
+                    for x0_dyn in range(0, orig_img_w, stride_w_dyn):
+                        num_tiles_processed += 1
+                        x1_dyn, y1_dyn = min(x0_dyn + tile_w_dyn, orig_img_w), min(y0_dyn + tile_h_dyn, orig_img_h)
+                        tile_data = original_image[y0_dyn:y1_dyn, x0_dyn:x1_dyn]
+                        tile_h_curr, tile_w_curr = tile_data.shape[:2]
+                        if tile_h_curr == 0 or tile_w_curr == 0 or tile_h_curr < model_input_h_ref * 0.1 or tile_w_curr < model_input_w_ref * 0.1: continue
+                        t_s = time.time(); tensor, ratio, pad_x, pad_y = preprocess_image_data_for_tiling(tile_data, (model_input_h_ref, model_input_w_ref)); total_tile_preprocessing_time += time.time() - t_s
+                        t_s = time.time(); outputs = session.run(None, {input_name: tensor}); total_inference_time += time.time() - t_s
+                        t_s = time.time(); boxes_np, scores_np, c_ids_np = postprocess_detections_from_tile(outputs, (tile_h_curr, tile_w_curr), (model_input_h_ref, model_input_w_ref),ratio, pad_x, pad_y, CONFIDENCE_THRESHOLD, 0); total_tile_postprocessing_time += time.time() - t_s
+                        if boxes_np.shape[0] > 0:
+                            for i_box_tile in range(boxes_np.shape[0]): b = boxes_np[i_box_tile]; aggregated_boxes.append([b[0] + x0_dyn, b[1] + y0_dyn, b[2] + x0_dyn, b[3] + y0_dyn]); aggregated_scores.append(scores_np[i_box_tile]); aggregated_class_ids.append(c_ids_np[i_box_tile])
+            timing_profile['3a_tiling_loop_total (incl_all_tiles_pre_inf_post)'] = time.time() - t_start_tiling_loop
+            timing_profile['3b_tiling_total_tile_preprocessing'] = total_tile_preprocessing_time
+            timing_profile['3c_tiling_total_tile_inference'] = total_inference_time
+            timing_profile['3d_tiling_total_tile_postprocessing'] = total_tile_postprocessing_time
+            print(f"切块检测完成 (处理 {num_tiles_processed} 个图块)。")
+            if len(aggregated_boxes) > 0:
+                t_start_nms = time.time(); keep_indices = non_max_suppression_global(np.array(aggregated_boxes), np.array(aggregated_scores), IOU_THRESHOLD); timing_profile['4a_global_nms'] = time.time() - t_start_nms
+                aggregated_boxes = [aggregated_boxes[i] for i in keep_indices]; aggregated_scores = [aggregated_scores[i] for i in keep_indices]; aggregated_class_ids = [aggregated_class_ids[i] for i in keep_indices]
+                print(f"全局NMS完成 ({timing_profile['4a_global_nms']:.2f} 秒)。找到了 {len(aggregated_boxes)} 个框。")
+            else:
+                timing_profile['4a_global_nms'] = 0; aggregated_boxes, aggregated_scores, aggregated_class_ids = [], [], []; print("切块后未检测到聚合对象，或NMS后无剩余对象。")
+        else:
+            print("--- 开始整图检测 (使用新ONNX模型适配的预处理和后处理) ---"); t_s = time.time(); input_tensor, ratio_main, pad_x_main, pad_y_main = preprocess_onnx_for_main(original_image, (model_input_h_ref, model_input_w_ref)); timing_profile['3a_fullimg_preprocessing'] = time.time() - t_s; t_s = time.time(); outputs_main = session.run(None, {input_name: input_tensor}); timing_profile['3b_fullimg_inference'] = time.time() - t_s;
+            detections_result_list = postprocess_yolo_onnx_for_main(outputs_main, CONFIDENCE_THRESHOLD, IOU_THRESHOLD, original_image.shape[:2], (model_input_h_ref, model_input_w_ref), ratio_main, pad_x_main, pad_y_main, num_classes=len(class_names)); timing_profile['3c_fullimg_postprocessing'] = time.time() - t_s
+            aggregated_boxes = [[d[0], d[1], d[2], d[3]] for d in detections_result_list]; aggregated_scores = [d[4] for d in detections_result_list]; aggregated_class_ids = [d[5] for d in detections_result_list]; print(f"整图处理与后处理完成。找到了 {len(aggregated_boxes)} 个框。")
 
         if len(aggregated_boxes) > 0 and ((MIN_DETECTION_AREA is not None and MIN_DETECTION_AREA > 0) or actual_max_area_threshold_px is not None):
             t_start_area_filter=time.time(); filtered_by_area_boxes,filtered_by_area_scores,filtered_by_area_ids=[],[],[]; initial_box_count_before_area_filter=len(aggregated_boxes)
-            for i,box in enumerate(aggregated_boxes):
+            for i_box,box in enumerate(aggregated_boxes):
                 b_w,b_h=box[2]-box[0],box[3]-box[1]; area=b_w*b_h; valid_area=True
                 if MIN_DETECTION_AREA is not None and MIN_DETECTION_AREA > 0 and area < MIN_DETECTION_AREA: valid_area=False
                 if actual_max_area_threshold_px is not None and area > actual_max_area_threshold_px: valid_area=False
-                if valid_area: filtered_by_area_boxes.append(box); filtered_by_area_scores.append(aggregated_scores[i]); filtered_by_area_ids.append(aggregated_class_ids[i])
+                if valid_area: filtered_by_area_boxes.append(box); filtered_by_area_scores.append(aggregated_scores[i_box]); filtered_by_area_ids.append(aggregated_class_ids[i_box])
             aggregated_boxes,aggregated_scores,aggregated_class_ids=filtered_by_area_boxes,filtered_by_area_scores,filtered_by_area_ids; timing_profile['5_area_filtering']=time.time()-t_start_area_filter; print(f"面积筛选完成 (从 {initial_box_count_before_area_filter} 减少到 {len(aggregated_boxes)} 个框).")
         else:
             timing_profile['5_area_filtering']=0
@@ -254,16 +305,15 @@ if __name__ == "__main__":
                 class_id = int(aggregated_class_ids[i]); class_name_str = class_names[class_id] if class_names and 0 <= class_id < len(class_names) else f"ClassID:{class_id}"
                 x1_yolo, y1_yolo, x2_yolo, y2_yolo = [int(c) for c in yolo_box_coords]; h_yolo = y2_yolo - y1_yolo; w_yolo = x2_yolo - x1_yolo
                 y1_digit_ideal = y1_yolo + int(h_yolo * DIGIT_ROI_Y_OFFSET_FACTOR); h_digit_ideal = int(h_yolo * DIGIT_ROI_HEIGHT_FACTOR); y2_digit_ideal = y1_digit_ideal + h_digit_ideal
-                w_digit_expanded = int(w_yolo * DIGIT_ROI_WIDTH_EXPAND_FACTOR); cx_yolo = x1_yolo + w_yolo / 2; x1_digit_ideal = int(cx_yolo - w_digit_expanded / 2); x2_digit_ideal = int(cx_yolo + w_digit_expanded / 2)
+                w_digit_expanded = int(w_yolo * DIGIT_ROI_WIDTH_EXPAND_FACTOR); cx_yolo = x1_yolo + w_yolo / 2.0; x1_digit_ideal = int(cx_yolo - w_digit_expanded / 2.0); x2_digit_ideal = int(cx_yolo + w_digit_expanded / 2.0)
                 y1_d_clip = max(0, y1_digit_ideal); y2_d_clip = min(orig_img_h, y2_digit_ideal); x1_d_clip = max(0, x1_digit_ideal); x2_d_clip = min(orig_img_w, x2_digit_ideal)
                 current_box_info = {"roi_index": i + 1, "class": class_name_str, "bbox_yolo": [x1_yolo, y1_yolo, x2_yolo, y2_yolo], "bbox_digit_ocr": [x1_d_clip, y1_d_clip, x2_d_clip, y2_d_clip], "confidence_yolo": float(aggregated_scores[i]), "ocr_final_text": "N/A", "ocr_confidence": 0.0}
                 print(f"  OBU ROI {current_box_info['roi_index']} (YOLO Box): ... YOLO置信度={current_box_info['confidence_yolo']:.2f}"); print(f"    Calculated Digit ROI for OCR: {current_box_info['bbox_digit_ocr']}")
                 ocr_text_to_draw="N/A"
-                if ocr_server_predictor: # 使用 ocr_server_predictor
+                if ocr_server_predictor:
                     dx1,dy1,dx2,dy2=current_box_info['bbox_digit_ocr']
                     if dx2>dx1 and dy2>dy1:
                         digit_roi_color=original_image[dy1:dy2,dx1:dx2]
-                        # --- 预处理数字ROI：Resize到固定高度，然后OTSU二值化 ---
                         h_roi_digit, w_roi_digit = digit_roi_color.shape[:2]
                         image_for_ocr_bgr = None
                         if h_roi_digit > 0 and w_roi_digit > 0:
@@ -272,16 +322,11 @@ if __name__ == "__main__":
                             if target_w_ocr <= 0: target_w_ocr = 1
                             resized_digit_roi_color = cv2.resize(digit_roi_color, (target_w_ocr, TARGET_OCR_INPUT_HEIGHT), interpolation=cv2.INTER_CUBIC if scale_ocr > 1 else cv2.INTER_AREA)
                             cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_resized_color_h{TARGET_OCR_INPUT_HEIGHT}.png"), resized_digit_roi_color)
-
                             gray_resized_roi = cv2.cvtColor(resized_digit_roi_color, cv2.COLOR_BGR2GRAY)
                             cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_resized_gray_h{TARGET_OCR_INPUT_HEIGHT}.png"), gray_resized_roi)
-
                             _, binary_resized_roi = cv2.threshold(gray_resized_roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                             cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_resized_binary_otsu_h{TARGET_OCR_INPUT_HEIGHT}.png"), binary_resized_roi)
-
-                            image_for_ocr_bgr = cv2.cvtColor(binary_resized_roi, cv2.COLOR_GRAY2BGR) # 送给OCR的是这个
-                        # --- 结束预处理 ---
-
+                            image_for_ocr_bgr = cv2.cvtColor(binary_resized_roi, cv2.COLOR_GRAY2BGR)
                         if image_for_ocr_bgr is not None and image_for_ocr_bgr.size > 0:
                             print(f"    Attempting OCR with Server model (resized, otsu) for Digit ROI {current_box_info['roi_index']}...")
                             try:
@@ -292,7 +337,6 @@ if __name__ == "__main__":
                                 except StopIteration: pass
                                 if isinstance(recognition_result_dict, dict):
                                     raw_recognized_text = recognition_result_dict.get('rec_text', ""); ocr_score = recognition_result_dict.get('rec_score', 0.0)
-
                                 if raw_recognized_text:
                                     digits_only_text = "".join(re.findall(r'\d', raw_recognized_text))
                                     print(f"      OCR Server Result: Raw='{raw_recognized_text}', Digits='{digits_only_text}', Score={ocr_score:.2f}")
