@@ -19,7 +19,23 @@ from scipy.spatial.distance import cdist
 import uuid # For generating session IDs if needed
 
 # --- 配置 ---
-VERSION = "v2.5.6_flask_session_progressive_fill_complete"
+VERSION = "v5.3_db_check_layout_learning"
+
+VALID_OBU_CODES = { # 您提供的有效OBU码列表
+    "5001240700323449", "5001240700323450", "5001240700323445", "5001240700323446",
+    "5001240700323447", "5001240700323448", "5001240700323441", "5001240700323442",
+    "5001240700323443", "5001240700323444", "5001240700323437", "5001240700323438",
+    "5001240700323439", "5001240700323440", "5001240700323433", "5001240700323434",
+    "5001240700323435", "5001240700323436", "5001240700323430", "5001240700323431",
+    "5001240700323432", "5001240700323429", "5001240700323428", "5001240700323427",
+    "5001240700323426", "5001240700323425", "5001240700323424", "5001240700323423",
+    "5001240700323422", "5001240700323421", "5001240700323420", "5001240700323419",
+    "5001240700323418", "5001240700323417", "5001240700323416", "5001240700323415",
+    "5001240700323414", "5001240700323413", "5001240700323412", "5001240700323411",
+    "5001240700323410", "5001240700323409", "5001240700323408", "5001240700323407",
+    "5001240700323406", "5001240700323405", "5001240700323404", "5001240700323403",
+    "5001240700323402", "5001240700323401"
+}
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
@@ -67,6 +83,331 @@ onnx_session = None
 ocr_processing_pool = None
 actual_num_ocr_workers = 1
 session_data_store = {}
+
+# --- 新的核心函数：YOLO映射与布局更新 (V5.1 - 阶段四：首次校准增强) ---
+def refine_layout_and_map_yolo_to_logical(current_yolo_boxes_with_orig_idx, session_id, image_wh, logger):
+    logger.info(f"会话 {session_id}: (V5.1 P4) 开始智能映射YOLO并校准布局...")
+    session = session_data_store.get(session_id)
+    if not session:
+        logger.error(f"会话 {session_id}: 严重错误 - 在映射YOLO时未找到会话数据。")
+        return {}, False
+
+    layout_params = session["layout_parameters"]
+    current_config = session["current_layout_config"]
+
+    layout_updated_this_run = False
+    current_frame_mapping = {}
+
+    if not current_yolo_boxes_with_orig_idx:
+        logger.info(f"会话 {session_id}: 当前帧无YOLO检测框。")
+        return {}, False
+
+    # 1. 对当前帧的YOLO框进行行分组
+    yolo_anchors_sorted_by_y = sorted(current_yolo_boxes_with_orig_idx, key=lambda a: (a['cy'], a['cx']))
+    yolo_rows_grouped_current_frame = []
+    avg_h_yolo_for_grouping = np.mean([a['h'] for a in yolo_anchors_sorted_by_y if a.get('h',0) > 0]) if any(a.get('h',0) > 0 for a in yolo_anchors_sorted_by_y) else 30
+    y_threshold_for_grouping = avg_h_yolo_for_grouping * YOLO_ROW_GROUP_Y_THRESHOLD_FACTOR
+    if not yolo_anchors_sorted_by_y: logger.info(f"会话 {session_id}: 当前帧无有效YOLO锚点进行行分组。"); return {}, False
+    _current_row_group = [yolo_anchors_sorted_by_y[0]]
+    for i in range(1, len(yolo_anchors_sorted_by_y)):
+        if abs(yolo_anchors_sorted_by_y[i]['cy'] - _current_row_group[-1]['cy']) < y_threshold_for_grouping:
+            _current_row_group.append(yolo_anchors_sorted_by_y[i])
+        else:
+            yolo_rows_grouped_current_frame.append(sorted(_current_row_group, key=lambda a: a['cx']))
+            _current_row_group = [yolo_anchors_sorted_by_y[i]]
+    if _current_row_group: yolo_rows_grouped_current_frame.append(sorted(_current_row_group, key=lambda a: a['cx']))
+    if not yolo_rows_grouped_current_frame: logger.info(f"会话 {session_id}: 当前帧YOLO行分组为空。"); return {}, False
+    logger.info(f"会话 {session_id}: 当前帧YOLO行分组为 {len(yolo_rows_grouped_current_frame)} 行。每行数量: {[len(r) for r in yolo_rows_grouped_current_frame]}")
+
+    # 2. 布局参数的初始化 (仅在首次校准时)
+    if not layout_params.get("is_calibrated", False):
+        logger.info(f"会话 {session_id}: 首次布局参数校准...")
+
+        # a. 筛选高质量参考物理行 (至少包含2个OBU)
+        reliable_physical_rows = [row for row in yolo_rows_grouped_current_frame if len(row) >= 2]
+        if len(reliable_physical_rows) < 2 : # 需要至少2行可靠行来进行行高和趋势估计
+            logger.warning(f"会话 {session_id}: 可靠物理行数量 ({len(reliable_physical_rows)}) 不足2行，无法进行有效校准。")
+            return {}, False # 首次校准失败，等待更好的帧
+
+        # b. 智能判断特殊行位置 (默认在底部，但尝试检测反向)
+        num_detected_reliable_rows = len(reliable_physical_rows)
+        inferred_regular_cols = current_config["regular_cols_count"] # Start with config
+        # Try to infer regular cols from reliable rows
+        possible_reg_cols = [len(r) for r in reliable_physical_rows if len(r) != current_config["special_row_cols_count"]]
+        if possible_reg_cols:
+            mode_res = Counter(possible_reg_cols).most_common(1)
+            if mode_res and mode_res[0][0] > 0: inferred_regular_cols = mode_res[0][0]
+
+        special_row_at_bottom_of_detected_block = False
+        if len(reliable_physical_rows[-1]) == current_config["special_row_cols_count"] and \
+           (num_detected_reliable_rows == 1 or abs(len(reliable_physical_rows[-2]) - inferred_regular_cols) <=1):
+            special_row_at_bottom_of_detected_block = True
+            logger.info(f"  检测到物理底部为特殊行 (2列)。")
+
+        special_row_at_top_of_detected_block = False
+        if len(reliable_physical_rows[0]) == current_config["special_row_cols_count"] and \
+           (num_detected_reliable_rows == 1 or abs(len(reliable_physical_rows[1]) - inferred_regular_cols) <=1):
+            special_row_at_top_of_detected_block = True
+            logger.info(f"  检测到物理顶部为特殊行 (2列)。")
+
+        # 决定最终的特殊行逻辑位置 (True = 逻辑顶部，False = 逻辑底部)
+        # 优先相信底部特殊行（标准摆放），除非顶部特征非常明显且底部不像特殊行
+        if special_row_at_top_of_detected_block and not special_row_at_bottom_of_detected_block:
+            layout_params["special_row_at_logical_top"] = True
+        else: # 标准或无法判断，默认底部
+            layout_params["special_row_at_logical_top"] = False
+        logger.info(f"  判断特殊行在逻辑顶部: {layout_params['special_row_at_logical_top']}")
+
+        # c. 学习平均物理行高
+        physical_row_centers_y = [np.mean([a['cy'] for a in row]) for row in reliable_physical_rows]
+        learned_avg_physical_row_height = avg_h_yolo_for_grouping * 1.2 # Fallback
+        if len(physical_row_centers_y) > 1:
+            phys_row_heights = np.abs(np.diff(physical_row_centers_y))
+            if phys_row_heights.size > 0 and np.mean(phys_row_heights) > 0 :
+                learned_avg_physical_row_height = np.mean(phys_row_heights)
+        layout_params["avg_physical_row_height"] = learned_avg_physical_row_height
+        logger.info(f"  学习到平均物理行高: {learned_avg_physical_row_height:.1f}")
+
+        # d. 估算所有13个逻辑行的物理Y坐标
+        expected_rows = current_config["expected_total_rows"]
+        layout_params["row_y_estimates"] = [0.0] * expected_rows
+        anchor_physical_y = 0
+        anchor_logical_row = 0
+        if layout_params["special_row_at_logical_top"]: # 特殊行在顶，以检测到的第一行物理Y为基准
+            anchor_physical_y = physical_row_centers_y[0]
+            anchor_logical_row = 0 # 逻辑第0行
+        else: # 特殊行在底，以检测到的最后一行物理Y为基准
+            anchor_physical_y = physical_row_centers_y[-1]
+            anchor_logical_row = expected_rows - 1 # 逻辑最后一行
+
+        for r_log in range(expected_rows):
+            layout_params["row_y_estimates"][r_log] = anchor_physical_y + \
+                (r_log - anchor_logical_row) * learned_avg_physical_row_height
+        logger.info(f"  估算逻辑行Y坐标: {[int(y) for y in layout_params['row_y_estimates']]}")
+
+        # e. 学习列X参数 (基于所有可靠物理行中，列数最接近常规列数的那些行)
+        candidate_rows_for_x_learning = [r for r in reliable_physical_rows if abs(len(r) - inferred_regular_cols) <= 1]
+        if not candidate_rows_for_x_learning: candidate_rows_for_x_learning = reliable_physical_rows # Fallback
+
+        all_col_xs_at_logical_index = [[] for _ in range(inferred_regular_cols)]
+        for row in candidate_rows_for_x_learning:
+            # 假设行内锚点大致对应逻辑列0,1,2,3 (如果len(row) == inferred_regular_cols)
+            # (更复杂的：如果len(row) < inferred_regular_cols，需要判断它们是哪几列)
+            # 简化：只用那些刚好等于 inferred_regular_cols 的行来学习每列的X
+            if len(row) == inferred_regular_cols:
+                for col_idx, anchor in enumerate(row):
+                    all_col_xs_at_logical_index[col_idx].append(anchor['cx'])
+
+        layout_params["col_x_estimates_regular"] = [0.0] * inferred_regular_cols
+        avg_obu_w_for_x_est = np.mean([a['w'] for a in yolo_anchors_input if a.get('w',0)>0]) if any(a.get('w',0)>0 for a in yolo_anchors_input) else 100
+        for c_log in range(inferred_regular_cols):
+            if all_col_xs_at_logical_index[c_log]:
+                layout_params["col_x_estimates_regular"][c_log] = np.mean(all_col_xs_at_logical_index[c_log])
+            else: # Fallback if a column has no data
+                layout_params["col_x_estimates_regular"][c_log] = (image_wh[1] * 0.1) + c_log * (avg_obu_w_for_x_est * 1.1) + avg_obu_w_for_x_est / 2.0
+        logger.info(f"  估算常规列X坐标: {[int(x) for x in layout_params['col_x_estimates_regular']]}")
+
+        layout_params["avg_obu_w"] = avg_obu_w_for_x_est
+        layout_params["avg_obu_h"] = np.mean([a['h'] for a in yolo_anchors_input if a.get('h',0)>0]) if any(a.get('h',0)>0 for a in yolo_anchors_input) else 40
+        layout_params["is_calibrated"] = True
+        layout_updated_this_run = True
+        session["layout_parameters"] = layout_params # Store updated params back to session
+
+    # --- 后续帧的参数微调/纠错逻辑 (V5.1 P4 占位符) ---
+    # else:
+    #    logger.info(f"会话 {session_id}: 使用已校准的布局参数。")
+    #    # (未来在这里实现基于 obu_evidence_pool 和当前帧的参数平滑更新/纠错)
+    #    pass
+
+
+    # 3. 将当前帧的YOLO锚点映射到逻辑坐标 (使用最新或已校准的布局参数)
+    if not layout_params.get("is_calibrated", False):
+        logger.warning(f"会话 {session_id}: 布局参数仍未校准，无法进行精确映射。")
+        return {}, False
+
+    row_ys_est = layout_params["row_y_estimates"]
+    col_xs_est_reg = layout_params["col_x_estimates_regular"]
+    # 使用学习到的行高和列间距（或OBU宽度）作为匹配阈值参考
+    y_match_threshold = layout_params.get("avg_physical_row_height", 50) * 0.7
+    x_match_threshold = (layout_params.get("avg_col_spacing") or layout_params.get("avg_obu_w",100)) * 0.7
+
+    for anchor in current_yolo_boxes_with_orig_idx:
+        if 'cx' not in anchor or 'cy' not in anchor: continue
+        best_r, best_c = -1, -1; min_dist_sq = float('inf')
+
+        # a. 找到最近的逻辑行
+        cand_r = -1; min_y_d = float('inf')
+        for r_idx, est_y in enumerate(row_ys_est):
+            dist_y = abs(anchor['cy'] - est_y)
+            if dist_y < min_y_d and dist_y < y_match_threshold :
+                min_y_d = dist_y; cand_r = r_idx
+        if cand_r == -1: continue
+
+        # b. 在该逻辑行内，找到最近的逻辑列
+        is_special_row_map = (cand_r == (expected_total_logical_rows - 1) and not layout_params.get("special_row_at_logical_top", False)) or \
+                             (cand_r == 0 and layout_params.get("special_row_at_logical_top", False))
+
+        cols_in_this_logical_row = current_config["special_row_cols_count"] if is_special_row_map else inferred_regular_cols
+
+        # 获取当前逻辑行的列X坐标估算
+        current_row_col_xs_to_match = []
+        if is_special_row_map and current_config["special_row_cols_count"] == 2 and inferred_regular_cols == 4:
+            if len(col_xs_est_reg) == 4: current_row_col_xs_to_match = [col_xs_est_reg[1], col_xs_est_reg[2]] # 对应逻辑列1,2
+        else:
+            current_row_col_xs_to_match = col_xs_est_reg[:cols_in_this_logical_row]
+
+        if not current_row_col_xs_to_match: continue
+
+        cand_c_in_row = -1; min_x_d = float('inf')
+        for c_idx_in_row_options, est_x in enumerate(current_row_col_xs_to_match):
+            dist_x = abs(anchor['cx'] - est_x)
+            if dist_x < min_x_d and dist_x < x_match_threshold :
+                min_x_d = dist_x; cand_c_in_row = c_idx_in_row_options
+
+        if cand_c_in_row != -1:
+            best_r = cand_r
+            # 将行内列索引转换回全局逻辑列索引
+            if is_special_row_map and current_config["special_row_cols_count"] == 2 and inferred_regular_cols == 4:
+                best_c = cand_c_in_row + 1 # 0->1, 1->2
+            else:
+                best_c = cand_c_in_row
+
+            current_frame_mapping[anchor['original_index']] = (best_r, best_c)
+
+    logger.info(f"会话 {session_id}: (V5.1 P4) YOLO锚点映射完成，共映射 {len(current_frame_mapping)} 个。")
+    return current_frame_mapping, layout_updated_this_run
+
+def update_session_state_from_ocr(session_id, current_frame_yolo_logical_map, ocr_results_this_frame, logger):
+    """
+    V5.3: 根据YOLO的逻辑坐标映射和OCR结果（已校验），更新会话的状态矩阵和证据池。
+    """
+    session = session_data_store.get(session_id)
+    if not session: return
+    logger.info(f"会话 {session_id}: (V5.3) 更新状态矩阵和证据池...")
+
+    logical_matrix = session["logical_matrix"]
+    recognized_texts_map = session["recognized_texts_map"]
+    obu_evidence_pool = session["obu_evidence_pool"]
+    layout_params = session["layout_parameters"] # 用于冲突解决时参考预期位置
+
+    for ocr_item in ocr_results_this_frame:
+        if not ocr_item: continue
+        original_yolo_idx = ocr_item.get("original_index")
+        ocr_text = ocr_item.get("ocr_final_text", "")
+        ocr_confidence = ocr_item.get("ocr_confidence", 0.0)
+
+        # 1. 数据库校验 (使用全局 VALID_OBU_CODES)
+        is_valid_in_db = ocr_text in VALID_OBU_CODES
+
+        if original_yolo_idx in current_frame_yolo_logical_map:
+            r_log, c_log = current_frame_yolo_logical_map[original_yolo_idx]
+
+            if not (0 <= r_log < len(logical_matrix) and 0 <= c_log < len(logical_matrix[0])):
+                logger.warning(f"会话 {session_id}: OCR结果的逻辑坐标 ({r_log},{c_log}) 超出矩阵范围。")
+                continue
+            if logical_matrix[r_log][c_log] == -1: continue # 不可用坑位
+
+            if is_valid_in_db:
+                # 获取对应的YOLO锚点信息 (需要确保它在ocr_item中或能通过original_yolo_idx回溯)
+                # current_yolo_anchor_info = find_yolo_anchor_by_original_index(original_yolo_idx, ...)
+                # 假设 ocr_item 中已包含 bbox_yolo (或能回溯)
+                yolo_anchor_info_for_this_ocr = next((box for box_idx, box in enumerate(session.get("_current_frame_yolo_boxes_cache",[])) if box_idx == original_yolo_idx), None)
+
+
+                # 更新 OBU 证据池
+                if ocr_text not in obu_evidence_pool:
+                    obu_evidence_pool[ocr_text] = {'physical_anchors': [], 'ocr_confidence': 0.0, 'logical_coord': None}
+
+                # 添加/更新物理锚点 (只保留最新的或最好的几个)
+                if yolo_anchor_info_for_this_ocr:
+                    obu_evidence_pool[ocr_text]['physical_anchors'] = [yolo_anchor_info_for_this_ocr] # 简化：只存当前帧
+
+                # 更新最高OCR置信度
+                obu_evidence_pool[ocr_text]['ocr_confidence'] = max(obu_evidence_pool[ocr_text]['ocr_confidence'], ocr_confidence)
+                # 逻辑坐标会在每次重新构建矩阵时确定，这里先不存
+
+                # 更新状态矩阵和识别文本映射 (冲突处理简化为先到先得或高分者得)
+                existing_text_in_slot = recognized_texts_map.get((r_log, c_log))
+                if existing_text_in_slot is None or existing_text_in_slot == ocr_text: # 空位或相同文本
+                    logical_matrix[r_log][c_log] = 1
+                    recognized_texts_map[(r_log, c_log)] = ocr_text
+                elif existing_text_in_slot != ocr_text: # 冲突：不同文本想映射到同一位置
+                    # 简化：比较OCR置信度
+                    # (需要从obu_evidence_pool中获取existing_text_in_slot的置信度)
+                    old_text_data = obu_evidence_pool.get(existing_text_in_slot)
+                    old_text_score = old_text_data.get('ocr_confidence', 0) if old_text_data else 0
+                    if ocr_confidence > old_text_score:
+                        logger.warning(f"会话 {session_id}: 坑位({r_log},{c_log})冲突，新文本'{ocr_text}'(分:{ocr_confidence:.2f})覆盖旧文本'{existing_text_in_slot}'(分:{old_text_score:.2f})")
+                        # 需要将旧文本从recognized_texts_map中移除其旧位置的映射（如果它之前映射在这里）
+                        # 并且，旧文本现在处于“未定位”状态，下一轮构建矩阵时会尝试为它找新位置
+                        # 这个冲突解决逻辑比较复杂，V1先简化
+                        logical_matrix[r_log][c_log] = 1
+                        recognized_texts_map[(r_log, c_log)] = ocr_text
+                    else:
+                        logger.warning(f"会话 {session_id}: 坑位({r_log},{c_log})冲突，旧文本'{existing_text_in_slot}'保留，新文本'{ocr_text}'被忽略。")
+            else: # OCR结果无效 (不在数据库)
+                if logical_matrix[r_log][c_log] == 0: # 只有当之前是未知时才标记为失败
+                    logical_matrix[r_log][c_log] = 2
+        else: # 该YOLO框没有成功的逻辑坐标映射
+            if is_valid_in_db:
+                logger.warning(f"会话 {session_id}: 有效OBU '{ocr_text}' 的YOLO框未能映射到逻辑坐标。")
+            # (可以考虑是否要将这个YOLO框标记为“悬空”待处理)
+
+    # 基于更新后的 obu_evidence_pool 和最新的 layout_params, 重新构建输出矩阵
+    # (这一步是关键的“全局重排版”)
+    if layout_params.get("is_calibrated"):
+        logger.info(f"会话 {session_id}: 基于更新的证据池和布局参数，重新构建最终逻辑矩阵...")
+        # 1. 清空当前的状态矩阵和文本映射 (除了-1的不可用位)
+        for r in range(len(logical_matrix)):
+            for c in range(len(logical_matrix[r])):
+                if logical_matrix[r][c] != -1:
+                    logical_matrix[r][c] = 0
+                    if (r,c) in recognized_texts_map:
+                        del recognized_texts_map[(r,c)]
+
+        # 2. 遍历 obu_evidence_pool 中的所有已验证OBU
+        for obu_text_verified, evidence_data in obu_evidence_pool.items():
+            if not evidence_data.get('physical_anchors'): continue
+            # 使用该OBU最新的/最可信的物理锚点
+            best_anchor_for_obu = evidence_data['physical_anchors'][-1] # 简化：取最新的
+
+            # 使用全局最新的 layout_params 为这个OBU推断最佳逻辑位置
+            # (这里的映射逻辑与 map_yolo_and_update_layout 中类似，但输入是单个锚点)
+            r_final, c_final = -1, -1
+            min_dist_sq_final = float('inf')
+            # ... (复制或调用一个辅助函数，根据 best_anchor_for_obu 和 layout_params 找到最佳 r_final, c_final)
+            # --- 临时简化版映射 (需要用更高级的算法替换) ---
+            row_ys_lp = layout_params["row_y_estimates"]
+            col_xs_lp = layout_params["col_x_at_row_estimates"]
+            avg_h_lp = layout_params["avg_obu_h"]
+            avg_w_lp = layout_params["avg_obu_w"]
+
+            for r_idx, r_y_est in enumerate(row_ys_lp):
+                for c_idx, c_x_est in enumerate(col_xs_lp):
+                    dist_sq = (best_anchor_for_obu['cy'] - r_y_est)**2 + (best_anchor_for_obu['cx'] - c_x_est)**2
+                    if dist_sq < min_dist_sq_final and dist_sq < ( (avg_h_lp*0.7)**2 + (avg_w_lp*0.7)**2 ):
+                        min_dist_sq_final = dist_sq
+                        r_final, c_final = r_idx, c_idx
+            # --- 结束临时简化版 ---
+
+            if r_final != -1 and c_final != -1:
+                 # 特殊行逻辑 (假设在最后一行，且是中间两列)
+                if r_final == current_config["expected_total_rows"] - 1 and \
+                   current_config["special_row_cols_count"] == 2 and \
+                   current_config["regular_cols_count"] == 4:
+                    if c_final == 0: c_final = 1
+                    elif c_final == 1: c_final = 1
+                    elif c_final == 2: c_final = 2
+                    elif c_final == 3: c_final = 2
+
+                if logical_matrix[r_final][c_final] == 0: # 如果该坑位为空
+                    logical_matrix[r_final][c_final] = 1
+                    recognized_texts_map[(r_final, c_final)] = obu_text_verified
+                    obu_evidence_pool[obu_text_verified]['logical_coord'] = (r_final, c_final) # 更新证据池中的逻辑坐标
+                elif recognized_texts_map.get((r_final, c_final)) != obu_text_verified:
+                    # 冲突：该坑位已被其他已验证OBU占据
+                    logger.warning(f"会话 {session_id}: 最终构建矩阵时，坑位({r_final},{c_final})冲突! '{recognized_texts_map.get((r_final, c_final))}' vs '{obu_text_verified}'")
+                    # (需要更复杂的冲突解决，例如比较谁的物理锚点与该坑位的预期物理位置更近)
 
 # --- 新的核心函数：YOLO映射与布局更新 (V5.1 - 阶段二：初步智能化) ---
 def map_yolo_and_update_layout(current_yolo_boxes, session_id, logger):
