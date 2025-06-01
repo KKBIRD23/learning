@@ -19,7 +19,7 @@ from scipy.spatial.distance import cdist # For build_matrix_smart_grid
 
 # --- 配置 ---
 # ================== 版本信息 ==================
-VERSION = "v2.5.5_flask_smart_matrix_integration"
+VERSION = "v2.5.6_flask_session_progressive_fill"
 
 # ... (UPLOAD_FOLDER, ALLOWED_EXTENSIONS, LOG_DIR, LOG_FILE, etc. from v2.5.4 remain the same) ...
 # ================== 服务端上传配置 ==================

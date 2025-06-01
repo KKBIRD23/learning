@@ -12,7 +12,7 @@ SERVER_URL = "http://127.0.0.1:5000/predict"
 # 并且 client.py 在 D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\
 # 那么相对路径可以是 r"..\DATA\PIC\3.jpg"
 # 或者使用绝对路径 r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\DATA\PIC\3.jpg"
-IMAGE_PATH_TO_UPLOAD = r"..\..\..\DATA\PIC\2.jpg" # 假设 3.jpg 在上一级目录的 DATA/PIC/ 下
+IMAGE_PATH_TO_UPLOAD = r"..\..\..\DATA\PIC\3.jpg" # 假设 3.jpg 在上一级目录的 DATA/PIC/ 下
 
 # --- 主函数 ---
 def send_image_for_prediction(image_path):
