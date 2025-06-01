@@ -30,7 +30,7 @@ ONNX_MODEL_PATH = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx"
 SERVER_REC_MODEL_DIR_CFG = r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\model\PaddleOCR\PP-OCRv5_server_rec_infer"
 
 # ================== 输入图像配置 ==================
-IMAGE_NAME = r"../../DATA/PIC/3.jpg"
+IMAGE_NAME = r"../../DATA/PIC/2.jpg"
 
 # ================== YOLOv8 检测参数 ==================
 CONFIDENCE_THRESHOLD = 0.25

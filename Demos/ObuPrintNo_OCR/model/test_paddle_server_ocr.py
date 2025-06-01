@@ -15,7 +15,7 @@ import re
 # --- V2.5.1_server_batch_recognition ---
 VERSION = "v2.5.1_server_batch_recognition" # 新版本号，标明批量处理
 ONNX_MODEL_PATH = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx"
-IMAGE_NAME = r"../../DATA/PIC/3.jpg"
+IMAGE_NAME = r"../../DATA/PIC/2.jpg"
 CONFIDENCE_THRESHOLD = 0.25
 IOU_THRESHOLD = 0.45
 
