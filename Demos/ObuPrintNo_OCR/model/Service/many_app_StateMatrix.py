@@ -68,50 +68,36 @@ ocr_processing_pool = None
 actual_num_ocr_workers = 1
 session_data_store = {}
 
-# --- 新的核心函数：YOLO映射与布局更新 ---
+# --- 新的核心函数：YOLO映射与布局更新 (V5.1 - 阶段二：初步智能化) ---
 def map_yolo_and_update_layout(current_yolo_boxes, session_id, logger):
     """
-    V5.1 - 阶段一：极简占位符版本。
-    将当前帧的YOLO检测框映射到逻辑坐标，并尝试更新会话的布局参数。
-    当前版本：进行YOLO行分组，然后简单地按物理行列顺序赋予逻辑行列号，
-              不进行复杂的布局学习或纠错。
-    Args:
-        current_yolo_boxes (list): 当前帧的YOLO检测结果列表,
-                                   每个元素是 {'cx', 'cy', 'w', 'h', 'box_yolo', 'score', 'original_index'}
-        session_id: 当前会话ID.
-        logger: Flask app logger.
-    Returns:
-        list: 当前帧YOLO框到逻辑坐标的映射列表
-              [(original_yolo_index, (logical_row, logical_col))]
-        bool: 布局参数是否在本轮发生了更新 (本阶段始终为 False)
+    V5.1 - 阶段二：初步智能化版本。
+    将当前帧的YOLO检测框映射到逻辑坐标，并尝试学习/更新会话的布局参数。
     """
-    logger.info(f"会话 {session_id}: (极简版) 开始映射YOLO锚点...")
+    logger.info(f"会话 {session_id}: (智能版V5.1 P2) 开始映射YOLO锚点并更新布局...")
     session = session_data_store.get(session_id)
     if not session:
         logger.error(f"会话 {session_id}: 在映射YOLO时未找到会话数据。")
         return [], False
 
-    # current_config = session["current_layout_config"] # 获取当前会话的布局配置
-    # layout_params = session["layout_parameters"] # 获取当前布局参数
-    # yolo_anchor_map = session["yolo_anchor_map"] # 获取已映射的锚点
+    layout_params = session["layout_parameters"]
+    yolo_anchor_map = session["yolo_anchor_map"] # 用于存储每个逻辑坑位最可信的物理锚点
+    current_config = session["current_layout_config"]
 
-    current_frame_mapping = []
-    layout_updated_this_run = False # 本阶段不更新布局参数
+    layout_updated_this_run = False
+    current_frame_mapping = [] # [(original_yolo_index, (logical_row, logical_col))]
 
     if not current_yolo_boxes:
         logger.info(f"会话 {session_id}: 当前帧无YOLO检测框。")
-        return [], layout_updated_this_run
+        return [], False
 
-    # 1. 对当前帧的YOLO框进行行分组 (复用之前的逻辑)
+    # 1. 对当前帧的YOLO框进行行分组 (与之前相同)
     yolo_anchors_sorted_by_y = sorted(current_yolo_boxes, key=lambda a: (a['cy'], a['cx']))
     yolo_rows_grouped_current_frame = []
+    # ... (完整的行分组逻辑，得到 yolo_rows_grouped_current_frame) ...
     avg_h_yolo_for_grouping = np.mean([a['h'] for a in yolo_anchors_sorted_by_y if a.get('h',0) > 0]) if any(a.get('h',0) > 0 for a in yolo_anchors_sorted_by_y) else 30
     y_threshold_for_grouping = avg_h_yolo_for_grouping * YOLO_ROW_GROUP_Y_THRESHOLD_FACTOR
-
-    if not yolo_anchors_sorted_by_y:
-        logger.info(f"会话 {session_id}: (极简版) 当前帧无有效YOLO锚点进行行分组。")
-        return [], layout_updated_this_run
-
+    if not yolo_anchors_sorted_by_y: logger.info(f"会话 {session_id}: 当前帧无有效YOLO锚点进行行分组。"); return [], False
     _current_row_group = [yolo_anchors_sorted_by_y[0]]
     for i in range(1, len(yolo_anchors_sorted_by_y)):
         if abs(yolo_anchors_sorted_by_y[i]['cy'] - _current_row_group[-1]['cy']) < y_threshold_for_grouping:
@@ -119,61 +105,184 @@ def map_yolo_and_update_layout(current_yolo_boxes, session_id, logger):
         else:
             yolo_rows_grouped_current_frame.append(sorted(_current_row_group, key=lambda a: a['cx']))
             _current_row_group = [yolo_anchors_sorted_by_y[i]]
-    if _current_row_group:
-        yolo_rows_grouped_current_frame.append(sorted(_current_row_group, key=lambda a: a['cx']))
+    if _current_row_group: yolo_rows_grouped_current_frame.append(sorted(_current_row_group, key=lambda a: a['cx']))
 
     if not yolo_rows_grouped_current_frame:
-        logger.info(f"会话 {session_id}: (极简版) 当前帧YOLO行分组为空。")
-        return [], layout_updated_this_run
-
-    # 2. 极简映射：按物理行列顺序赋予逻辑行列号
-    #    假设检测到的第一行是逻辑上的某一行开始，后续递增。
-    #    这只是为了跑通流程，后续会被智能算法替代。
-    #    我们暂时假设检测到的行就是从逻辑行0开始，每行最多4列。
-    #    并且，特殊行的处理也暂时简化。
-
-    max_logical_rows = session["current_layout_config"]["expected_total_rows"]
-    max_logical_cols = session["current_layout_config"]["regular_cols_count"]
-
-    for r_physical, physical_row_anchors in enumerate(yolo_rows_grouped_current_frame):
-        # 粗略地将物理行号映射为逻辑行号 (非常不准确，仅为占位)
-        # 更好的方法是基于Y坐标与预估的逻辑行Y坐标匹配
-        # 暂时：假设物理行顺序对应逻辑行顺序的后几行 (更接近底部)
-        logical_r = (max_logical_rows - len(yolo_rows_grouped_current_frame)) + r_physical
-        if logical_r < 0: logical_r = r_physical # Fallback if too many physical rows detected
-
-        if not (0 <= logical_r < max_logical_rows):
-            # logger.debug(f"会话 {session_id}: (极简版) 物理行 {r_physical} 估算的逻辑行 {logical_r} 超出范围，尝试修正或跳过。")
-            # 尝试将其放入最后一个有效逻辑行，如果列允许的话 (非常粗暴的修正)
-            if logical_r >= max_logical_rows : logical_r = max_logical_rows -1
-            elif logical_r < 0 : logical_r = 0
+        logger.info(f"会话 {session_id}: 当前帧YOLO行分组为空。")
+        return [], False
+    logger.info(f"会话 {session_id}: 当前帧YOLO行分组为 {len(yolo_rows_grouped_current_frame)} 行。")
 
 
-        for c_physical, anchor in enumerate(physical_row_anchors):
-            logical_c = c_physical # 简单地将物理列号作为逻辑列号
+    # 2. 学习/更新布局参数 (layout_params)
+    # 简化版：如果尚未校准，或当前帧提供了“更好”的行信息，则尝试校准
+    # “更好”的定义：例如，检测到的物理行数更接近预期的总行数
 
-            if not (0 <= logical_c < max_logical_cols):
-                # logger.debug(f"会话 {session_id}: (极简版) 锚点物理列 {c_physical} 超出最大逻辑列 {max_logical_cols}，跳过。")
-                continue
+    num_detected_physical_rows = len(yolo_rows_grouped_current_frame)
+    expected_total_logical_rows = current_config["expected_total_rows"]
 
-            # 简单处理特殊行（最后一行）的列数限制
-            is_special_row = (logical_r == max_logical_rows - 1)
-            if is_special_row and session["current_layout_config"]["special_row_cols_count"] == 2 and max_logical_cols == 4:
-                # 如果是特殊行，我们期望它填充到逻辑列1和2
-                if c_physical == 0: logical_c = 1 # 第一个物理锚点放逻辑列1
-                elif c_physical == 1: logical_c = 2 # 第二个物理锚点放逻辑列2
-                else: continue # 特殊行只处理前两个物理锚点
+    # 筛选高质量的物理行作为参考 (例如，行内OBU数量 > 1)
+    reference_physical_rows = [row for row in yolo_rows_grouped_current_frame if len(row) > 1]
+    if not reference_physical_rows:
+        logger.warning(f"会话 {session_id}: 当前帧未找到足够的高质量参考物理行 (每行至少2个锚点)。")
+        # 如果已有校准参数，则使用旧的；否则无法进行映射
+        if not layout_params.get("is_calibrated", False):
+            return [], False
+    else: # 有参考行，尝试更新布局参数
+        # a. 学习平均物理行高
+        learned_avg_physical_row_height = layout_params.get("avg_obu_h", avg_h_yolo_for_grouping * 1.2) # Default
+        if len(reference_physical_rows) > 1:
+            y_diffs = [np.mean([a['cy'] for a in reference_physical_rows[i+1]]) - np.mean([a['cy'] for a in reference_physical_rows[i]])
+                       for i in range(len(reference_physical_rows)-1) if reference_physical_rows[i+1] and reference_physical_rows[i]]
+            if y_diffs and np.mean(y_diffs) > 0 : learned_avg_physical_row_height = np.mean(y_diffs)
 
-            if 'original_index' in anchor:
-                 current_frame_mapping.append( (anchor['original_index'], (logical_r, logical_c)) )
-            else:
-                logger.warning(f"会话 {session_id}: (极简版) YOLO锚点缺少 'original_index': {anchor}")
+        # b. 学习平均物理列间距和起始X (从参考行中数量最多的那几行学习)
+        #    这里用一个简化的方法：取所有参考行中X分布的统计值
+        all_ref_cx = [a['cx'] for row in reference_physical_rows for a in row]
+        all_ref_w = [a['w'] for row in reference_physical_rows for a in row if a.get('w',0)>0]
+
+        learned_avg_start_x = min(all_ref_cx) if all_ref_cx else layout_params.get("avg_start_x", 100)
+        learned_avg_col_spacing = layout_params.get("avg_col_spacing", (np.mean(all_ref_w) if all_ref_w else 100) * 1.1)
+
+        temp_spacings = []
+        for row in reference_physical_rows:
+            if len(row) > 1:
+                xs_in_row = sorted([a['cx'] for a in row])
+                temp_spacings.extend(np.diff(xs_in_row))
+        if temp_spacings: learned_avg_col_spacing = np.mean(temp_spacings)
+
+        # c. 更新会话的布局参数 (简化：如果未校准，或当前帧行数更多，则直接使用学习到的新参数)
+        if not layout_params.get("is_calibrated", False) or \
+           num_detected_physical_rows > layout_params.get("last_used_num_physical_rows_for_calib", 0):
+
+            layout_params["avg_physical_row_height"] = learned_avg_physical_row_height
+            layout_params["avg_start_x"] = learned_avg_start_x
+            layout_params["avg_col_spacing"] = learned_avg_col_spacing
+
+            # 估算所有逻辑行的Y坐标
+            # 假设检测到的物理行块对应于逻辑行的底部（更清晰）
+            # (这是一个非常强的假设，需要后续优化为基于特殊行锚定)
+            estimated_row_y = [0.0] * expected_total_logical_rows
+            if reference_physical_rows:
+                # 以检测到的最底部物理行为基准，向上外推
+                base_physical_y = np.mean([a['cy'] for a in reference_physical_rows[-1]])
+                # 假设这个最底部物理行对应逻辑上的某一行 (例如，特殊行是最后一行，则为 expected_total_logical_rows -1)
+                # 简化：假设它就是 expected_total_logical_rows - len(reference_physical_rows) + (len(reference_physical_rows)-1)
+                # 即，检测到的行块的最后一行，对应它在块内的索引所暗示的逻辑行（从底部数起）
+                # 这部分逻辑需要非常小心，很容易出错，先用一个简单版本
+
+                # 简化：假设检测到的行是连续的逻辑行块，这个块的底部对应图片的底部
+                # 我们需要将这个块“对齐”到13个逻辑行中的某个位置
+                # 暂时：将检测到的物理行，从底部开始，依次映射到逻辑行 12, 11, 10 ...
+                # 这仍然不够智能，但比之前的全局平均要好一点
+
+                # 尝试基于检测到的行的Y范围，在13个逻辑行中均匀分布
+                all_detected_cy = [a['cy'] for row in reference_physical_rows for a in row]
+                if all_detected_cy:
+                    min_detected_y, max_detected_y = min(all_detected_cy), max(all_detected_cy)
+                    if expected_total_logical_rows == 1:
+                        estimated_row_y[0] = (min_detected_y + max_detected_y) / 2
+                    elif max_detected_y > min_detected_y : # 确保范围有效
+                        y_step_logic = (max_detected_y - min_detected_y) / (num_detected_physical_rows -1 if num_detected_physical_rows > 1 else 1)
+                        # 将这个学习到的物理行高，用于扩展到所有逻辑行
+                        # 以检测到的最底部行的Y为基准，向上/下扩展
+                        # 假设检测到的最后一行是逻辑上的第 (expected_total_logical_rows - 1) 行 (如果它是特殊行)
+                        # 或者 (expected_total_logical_rows - num_detected_physical_rows + i)
+                        # 这是一个非常粗略的Y锚定，后续必须优化
+                        ref_y_for_logic_map = max_detected_y
+                        ref_logic_row_for_map = expected_total_logical_rows -1
+
+                        for r_log in range(expected_total_logical_rows):
+                             estimated_row_y[r_log] = ref_y_for_logic_map - (ref_logic_row_for_map - r_log) * learned_avg_physical_row_height
+                    else: # 如果所有检测行Y坐标都一样（不太可能）或只有一个检测行
+                        for r_log in range(expected_total_logical_rows):
+                            estimated_row_y[r_log] = min_detected_y - ( (expected_total_logical_rows -1)/2 - r_log) * learned_avg_physical_row_height
 
 
-    # (占位符) 在这里，未来版本会进行复杂的布局参数学习和yolo_anchor_map更新
-    # layout_updated_this_run = True # 如果参数更新了
+            layout_params["row_y_estimates"] = estimated_row_y
 
-    logger.info(f"会话 {session_id}: (极简版) YOLO锚点映射完成，共映射 {len(current_frame_mapping)} 个。")
+            # X坐标也用学习到的参数（暂时不考虑每行不同）
+            temp_col_x = [0.0] * current_config["regular_cols_count"]
+            for c_log in range(current_config["regular_cols_count"]):
+                temp_col_x[c_log] = learned_avg_start_x + c_log * learned_avg_col_spacing + (np.mean(all_ref_w) if all_ref_w else 100)/2 # 中心点
+            layout_params["col_x_estimates_regular"] = temp_col_x # 存储常规4列的X中心
+
+            layout_params["is_calibrated"] = True
+            layout_params["last_used_num_physical_rows_for_calib"] = num_detected_physical_rows
+            layout_updated_this_run = True
+            logger.info(f"会话 {session_id}: 布局参数已通过当前帧学习/更新。")
+
+    # 3. 将当前帧的YOLO锚点映射到逻辑坐标 (使用最新或已校准的布局参数)
+    if not layout_params.get("is_calibrated", False):
+        logger.warning(f"会话 {session_id}: 布局参数尚未校准，无法进行精确映射。")
+        # 可以选择返回空映射，或者进行一次非常粗略的映射
+        # 暂时返回空，依赖首次校准成功
+        return [], False
+
+    expected_logical_rows = current_config["expected_total_rows"]
+    expected_regular_cols = current_config["regular_cols_count"]
+
+    for anchor in current_yolo_boxes: # 遍历的是原始的 current_yolo_boxes
+        if 'cx' not in anchor or 'cy' not in anchor: continue
+
+        # a. 找到最近的逻辑行 (基于Y坐标)
+        best_logical_row = -1
+        min_y_dist = float('inf')
+        if layout_params.get("row_y_estimates"):
+            for r_idx, est_y in enumerate(layout_params["row_y_estimates"]):
+                dist = abs(anchor['cy'] - est_y)
+                if dist < min_y_dist and dist < layout_params.get("avg_physical_row_height", 50) * 0.6 : # Y距离阈值
+                    min_y_dist = dist
+                    best_logical_row = r_idx
+
+        if best_logical_row == -1: continue # 无法匹配到逻辑行
+
+        # b. 在该逻辑行内，找到最近的逻辑列 (基于X坐标)
+        best_logical_col = -1
+        min_x_dist = float('inf')
+
+        # 判断此逻辑行是否为特殊行
+        is_special_row = (best_logical_row == expected_logical_rows - 1) # 假设特殊行总在底部
+
+        cols_to_consider_in_this_row = current_config["special_row_cols_count"] if is_special_row else expected_regular_cols
+
+        # 获取该逻辑行的预估X列坐标
+        # (简化：所有行暂时使用统一的 col_x_estimates_regular)
+        # (未来：col_x_estimates 应该是一个二维列表或函数 layout_params["col_x_at_row_estimates"][best_logical_row][c])
+
+        estimated_col_xs_for_this_row = []
+        if layout_params.get("col_x_estimates_regular"):
+            if is_special_row and current_config["special_row_cols_count"] == 2 and expected_regular_cols == 4:
+                # 特殊行2列居中，使用常规列1和2的X坐标
+                if len(layout_params["col_x_estimates_regular"]) == 4:
+                    estimated_col_xs_for_this_row = [
+                        layout_params["col_x_estimates_regular"][1],
+                        layout_params["col_x_estimates_regular"][2]
+                    ]
+            else: # 常规行
+                estimated_col_xs_for_this_row = layout_params["col_x_estimates_regular"][:cols_to_consider_in_this_row]
+
+        if not estimated_col_xs_for_this_row: continue
+
+        for c_idx, est_x in enumerate(estimated_col_xs_for_this_row):
+            dist = abs(anchor['cx'] - est_x)
+            # X距离阈值，可以用平均列间距的一半，或平均OBU宽度的一半
+            x_dist_threshold = layout_params.get("avg_col_spacing", 100) * 0.6
+            if dist < min_x_dist and dist < x_dist_threshold :
+                min_x_dist = dist
+                best_logical_col = c_idx # 这是在 cols_to_consider_in_this_row 内的索引
+
+        if best_logical_col != -1:
+            # 如果是特殊行，需要将这个在特殊行内的列索引 (0或1) 转换回全局的逻辑列索引 (1或2)
+            final_logical_col = best_logical_col
+            if is_special_row and current_config["special_row_cols_count"] == 2 and expected_regular_cols == 4:
+                final_logical_col = best_logical_col + 1 # 0->1, 1->2
+
+            current_frame_mapping.append( (anchor['original_index'], (best_logical_row, final_logical_col)) )
+
+            # (可选) 更新 yolo_anchor_map
+            # ...
+
+    logger.info(f"会话 {session_id}: (智能版V5.1 P2) YOLO锚点映射完成，共映射 {len(current_frame_mapping)} 个。")
     return current_frame_mapping, layout_updated_this_run
 
 def update_session_matrix_from_image_data(session_id, yolo_boxes_with_logical_coords, ocr_results_this_frame, logger):
