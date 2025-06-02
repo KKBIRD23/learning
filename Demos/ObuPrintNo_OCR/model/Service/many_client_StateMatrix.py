@@ -68,7 +68,7 @@ def render_matrix_from_json(status_matrix, texts_map, session_id, image_name_bas
                 text_x = center_x - text_w // 2; text_y = center_y + text_h // 2 + text_offset_y
                 cv2.putText(canvas, display_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, current_text_color, font_thickness, cv2.LINE_AA)
 
-    output_render_dir = "process_photo" # 客户端渲染目录
+    output_render_dir = "process_photo" # 客户端渲染图目录
     # --- 新增调试打印 ---
     current_working_directory = os.getcwd()
     print(f"  客户端渲染：当前工作目录: {current_working_directory}")
@@ -102,7 +102,7 @@ def render_matrix_from_json(status_matrix, texts_map, session_id, image_name_bas
 
     # ... (cv2.imshow 和 cv2.waitKey 可以保持注释) ...
 
-def send_image_for_prediction(image_path, session_id_to_use, frame_counter, box_type_to_send=None):
+def send_image_for_prediction(image_path, session_id_to_use, frame_counter, force_recalibrate_payload=False, box_type_to_send=None):
     if not os.path.exists(image_path):
         print(f"客户端错误：图片文件未找到 - {image_path}")
         return None # Return None on failure
@@ -111,6 +111,8 @@ def send_image_for_prediction(image_path, session_id_to_use, frame_counter, box_
         with open(image_path, 'rb') as f:
             files_payload = {'file': (os.path.basename(image_path), f, 'image/jpeg')}
             data_payload = {'session_id': session_id_to_use}
+            if force_recalibrate_payload: # 如果为 True
+                data_payload['force_recalibrate'] = 'true'
             # ...
             response = requests.post(SERVER_URL, files=files_payload, data=data_payload, timeout=60)
 
@@ -119,6 +121,12 @@ def send_image_for_prediction(image_path, session_id_to_use, frame_counter, box_
                 response_json = response.json()
                 print(f"  服务端消息: {response_json.get('message')}")
                 print(f"  会话状态: {response_json.get('session_status')}")
+
+                warnings = response_json.get('warnings')
+                if warnings:
+                    print(f"  服务端警告:")
+                    for warn_item in warnings:
+                        print(f"    - {warn_item.get('message')}")
 
                 status_matrix = response_json.get('obu_status_matrix')
                 texts_map = response_json.get('obu_texts')
@@ -149,15 +157,35 @@ if __name__ == "__main__":
 
     frame_count = 0 # 初始化帧计数器
     for img_path in IMAGE_PATHS_TO_UPLOAD:
-        frame_count += 1 # 递增帧计数器
+        frame_count += 1
         if not os.path.exists(img_path):
             print(f"警告: 图片 {img_path} 未找到，跳过。")
             continue
-        json_response = send_image_for_prediction(img_path, current_batch_session_id, frame_count) # 传递帧计数器
+
+        # --- 新增：交互式询问是否强制校准 ---
+        image_basename = os.path.basename(img_path)
+        user_input = input(f"\n客户端：准备发送图片 {frame_count}/{len(IMAGE_PATHS_TO_UPLOAD)}: '{image_basename}'.\n是否强制重新校准布局? (输入 'y' 或 'Y' 后回车进行校准，直接回车则不校准): ").strip().lower()
+        should_force_recalibrate = (user_input == 'y')
+        if should_force_recalibrate:
+            print(f"  客户端：将为图片 '{image_basename}' 发送强制重新校准请求。")
+        else:
+            print(f"  客户端：将为图片 '{image_basename}' 发送常规处理请求。")
+        # --- 结束新增 ---
+
+        json_response = send_image_for_prediction(
+            img_path,
+            current_batch_session_id,
+            frame_count,
+            force_recalibrate_payload=should_force_recalibrate # MODIFIED: 传递校准标志
+        )
+
         if json_response and json_response.get("session_status") == "completed":
             print(f"客户端：会话 {current_batch_session_id} 已完成！")
-            # break
-        time.sleep(1)
+            # break # 可以根据需要决定是否在会话完成后跳出循环
+
+        # time.sleep(1) # 移除固定的 time.sleep，因为现在是等待用户输入
+        if frame_count < len(IMAGE_PATHS_TO_UPLOAD): # 如果不是最后一张图片，可以加一个小的提示，或者直接进入下一次input
+            print("-" * 30) # 分隔符
 
     print(f"客户端：会话 {current_batch_session_id} 的所有指定图片已发送。")
 
