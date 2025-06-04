@@ -1,3 +1,6 @@
 /Demos/DATA/
 /Demos/ObuPrintNo_OCR/model/model/
 /Demos/ObuPrintNo_OCR/model/train/
+Demos/ObuPrintNo_OCR/model/Service/process_photo/
+Demos/ObuPrintNo_OCR/model/Service/uploads/
+Demos/ObuPrintNo_OCR/model/Service/log/
