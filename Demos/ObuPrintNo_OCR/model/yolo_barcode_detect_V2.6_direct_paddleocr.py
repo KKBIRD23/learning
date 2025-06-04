@@ -19,7 +19,7 @@ import paddleocr
 
 # --- V2.6.4 配置参数 ---
 VERSION = "v2.6.4_tuning_and_docs"
-IMAGE_NAME = r"./PIC/1.JPG" # 指向包含多个OBU的图片路径
+IMAGE_NAME = r"..\..\DATA\PIC\3.jpg" # 指向包含多个OBU的图片路径
 
 # --- PaddleOCR 初始化相关参数 ---
 # 参考文档: https://paddlepaddle.github.io/PaddleOCR/latest/version3.x/pipeline_usage/OCR.html#3

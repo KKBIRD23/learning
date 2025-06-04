@@ -6,59 +6,66 @@ import time
 import traceback
 import paddle
 import paddleocr
+import paddlex as pdx # <--- 新增导入 paddlex
+import re # <--- 新增导入 re
 
-# --- PaddleOCR引擎初始化 ---
-paddle_ocr_engine = None
-try:
-    print("Initializing PaddleOCR engine globally...")
-    paddle_ocr_engine = paddleocr.PaddleOCR(lang='en')
-    print("PaddleOCR engine initialized successfully.")
-except Exception as e:
-    print(f"Error initializing PaddleOCR engine globally: {e}")
-    print("PaddleOCR features will be disabled.")
-    paddle_ocr_engine = None
+# --- V2.5.0 配置参数 ---
+VERSION = "v2.5.0_flexible_ocr"
+ONNX_MODEL_PATH = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx"
+IMAGE_NAME = r"..\..\DATA\PIC\3.jpg" # <--- 注意您的路径变化了
+CONFIDENCE_THRESHOLD = 0.25
+IOU_THRESHOLD = 0.45
 
-# --- V2.4 配置参数 ---
-VERSION = "v2.4.4_digit_roi_upper_half"
-ONNX_MODEL_PATH = r"./model/BarCode_Detect/BarCode_Detect_dynamic.onnx" # <--- 新模型路径
-IMAGE_NAME = r"./PIC/1.JPG"
-CONFIDENCE_THRESHOLD = 0.25 # 可以根据新模型调整，0.25是一个不错的起点
-IOU_THRESHOLD = 0.45      # NMS的IOU阈值
-
-# --- 切块逻辑配置 ---
-ENABLE_TILING = False # <--- 默认禁用切块，优先使用新模型的整图推理
+ENABLE_TILING = False
 FIXED_TILING_GRID = None
 MIN_IMAGE_DIM_FACTOR_FOR_TILING = 1.5
 TILE_OVERLAP_RATIO = 0.2
 
-# --- 检测结果面积筛选配置 ---
-MIN_DETECTION_AREA = 2000 # 根据新模型的检测框大小调整 (之前是9000)
-MAX_DETECTION_AREA = 0.1 # 占图像总面积的比例 (之前是0.01，可以适当放宽)
+MIN_DETECTION_AREA = 2000
+MAX_DETECTION_AREA = 0.1
 
-# --- V2.4.7 数字ROI裁剪精调参数 ---
-# 数字ROI的上边缘相对于YOLO检测框上边缘的偏移因子 (以YOLO框高度为单位)
-# 负值表示向上偏移 (我们期望数字在条形码上方，所以通常是负值)
-# 例如：-0.2 表示数字ROI的上边缘比YOLO框的上边缘还要高出YOLO框高度的20%
-#        0.0 表示数字ROI的上边缘与YOLO框上边缘对齐
-#        0.1 表示数字ROI的上边缘在YOLO框上边缘下方10%的位置 (不太可能用于我们的场景)
-DIGIT_ROI_Y_OFFSET_FACTOR = -0.2  # <--- 初始尝试值：向上偏移YOLO框高度的20%
+# --- 数字ROI裁剪精调参数 (确保这些参数在这里定义) ---
+DIGIT_ROI_Y_OFFSET_FACTOR = -0.15  # 示例值：-0.2表示向上偏移YOLO框高度的20%
+DIGIT_ROI_HEIGHT_FACTOR = 0.7    # 示例值：数字区域高度是YOLO框高度的60%
+DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05 # 示例值：左右各扩展2.5%
 
-# 数字ROI的高度相对于YOLO检测框总高度的比例因子
-DIGIT_ROI_HEIGHT_FACTOR = 0.6    # <--- 初始尝试值：数字区域高度是YOLO框高度的60%
+# --- OCR引擎选择与配置 ---
+OCR_ENGINE_TO_USE = "paddle_ocr_server_paddlex" # 可选: "paddle_ocr_mobile", "paddle_ocr_server_paddlex"
+SERVER_REC_MODEL_DIR_CFG = r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\model\PaddleOCR\PP-OCRv5_server_rec_infer"
+# 注意：Server检测模型我们不再单独加载，因为YOLO已经完成了ROI检测
+# SERVER_DET_MODEL_DIR_CFG = r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\model\PaddleOCR\PP-OCRv5_server_det_infer"
+MOBILE_OCR_LANG = 'en'
+OCR_PREPROCESS_TYPE_TO_USE = "binary_otsu_digit"
 
-# 数字ROI的宽度相对于YOLO检测框宽度的扩展因子
-DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05
-
-# 选择送给PaddleOCR的预处理类型: "color_digit", "gray_digit", "binary_otsu_digit", "binary_adaptive_digit"
-# 或者设置为 "all" 来尝试所有，或者一个列表 ["binary_otsu_digit", "gray_digit"]
-OCR_PREPROCESS_TYPE_TO_USE = "binary_otsu_digit" # <--- 新增：优先使用OTSU二值化
-
-COCO_CLASSES = ['Barcode'] # 明确我们的模型是单类别
+COCO_CLASSES = ['Barcode']
 
 timing_profile = {}
-process_photo_dir = "process_photo" # 过程图片保存目录
+process_photo_dir = "process_photo"
 
-# --- 清理过程图片文件夹的函数 ---
+# --- OCR引擎初始化 ---
+ocr_predictor = None
+if OCR_ENGINE_TO_USE == "paddle_ocr_mobile":
+    try:
+        print(f"Initializing PaddleOCR engine (Mobile, lang='{MOBILE_OCR_LANG}')...")
+        ocr_predictor = paddleocr.PaddleOCR(lang=MOBILE_OCR_LANG, show_log=False)
+        print("PaddleOCR Mobile engine initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing PaddleOCR Mobile engine: {e}"); traceback.print_exc()
+elif OCR_ENGINE_TO_USE == "paddle_ocr_server_paddlex":
+    try:
+        print(f"Initializing PaddleX Recognition Predictor (Server) from: {SERVER_REC_MODEL_DIR_CFG}")
+        ocr_predictor = pdx.inference.create_predictor(
+            model_dir=SERVER_REC_MODEL_DIR_CFG,
+            model_name='PP-OCRv5_server_rec', # 确保与yml中一致
+            device='cpu'
+        )
+        print("PaddleX Server Recognition Predictor initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing PaddleX Server Recognition Predictor: {e}"); traceback.print_exc()
+else:
+    print(f"错误: 未知的 OCR_ENGINE_TO_USE 配置: '{OCR_ENGINE_TO_USE}'. OCR将不可用。")
+
+# --- 辅助函数定义 (与V2.4.x一致) ---
 def clear_process_photo_directory(directory="process_photo"):
     if os.path.exists(directory):
         for filename in os.listdir(directory):
@@ -68,32 +75,22 @@ def clear_process_photo_directory(directory="process_photo"):
             except Exception as e: print(f'Failed to delete {file_path}. Reason: {e}')
     else: os.makedirs(directory, exist_ok=True)
 
-# --- 原V2.2/V2.3的切块相关函数 (保留但不一定调用) ---
-def preprocess_image_data_for_tiling(img_data, input_shape_hw): # 重命名以区分
-    # ... (与您V2.3中的 preprocess_image_data 内容一致) ...
-    img = img_data
-    if img is None: raise ValueError("输入图像数据为空 (tiling)")
-    img_height, img_width = img.shape[:2]
-    input_height, input_width = input_shape_hw
-    ratio = min(input_width / img_width, input_height / img_height)
-    new_width, new_height = int(img_width * ratio), int(img_height * ratio)
+def preprocess_image_data_for_tiling(img_data, input_shape_hw):
+    img = img_data; img_height, img_width = img.shape[:2]; input_height, input_width = input_shape_hw
+    ratio = min(input_width / img_width, input_height / img_height); new_width, new_height = int(img_width * ratio), int(img_height * ratio)
     resized_img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((input_height, input_width, 3), 128, dtype=np.uint8)
-    x_pad, y_pad = (input_width - new_width) // 2, (input_height - new_height) // 2
+    canvas = np.full((input_height, input_width, 3), 128, dtype=np.uint8); x_pad, y_pad = (input_width - new_width) // 2, (input_height - new_height) // 2
     canvas[y_pad:y_pad + new_height, x_pad:x_pad + new_width] = resized_img
-    tensor = canvas.transpose(2, 0, 1).astype(np.float32) / 255.0
-    return np.expand_dims(tensor, axis=0), ratio, x_pad, y_pad
+    tensor = canvas.transpose(2, 0, 1).astype(np.float32) / 255.0; return np.expand_dims(tensor, axis=0), ratio, x_pad, y_pad
 
 def postprocess_detections_from_tile(outputs, tile_original_shape_hw, _,
                                      preprocessing_ratio, preprocessing_pad_x, preprocessing_pad_y,
-                                     conf_threshold_tile, model_output_channels_param_ignored): # 重命名conf_threshold
-    # ... (与您V2.3中的 postprocess_detections_from_tile 内容一致, 使用 actual_model_output_channels) ...
+                                     conf_threshold_tile, model_output_channels_param_ignored):
     predictions_raw = np.squeeze(outputs[0])
     if predictions_raw.ndim != 2: return np.array([]), np.array([]), np.array([])
     actual_model_output_channels = predictions_raw.shape[0]
     if not isinstance(actual_model_output_channels, int): return np.array([]), np.array([]), np.array([])
-    transposed_predictions = predictions_raw.transpose()
-    boxes_tile_local_scaled, scores_tile_local, class_ids_tile_local = [], [], []
+    transposed_predictions = predictions_raw.transpose(); boxes_tile_local_scaled, scores_tile_local, class_ids_tile_local = [], [], []
     for pred_data in transposed_predictions:
         if len(pred_data) != actual_model_output_channels: continue
         cx, cy, w, h = pred_data[:4]; confidence, class_id = 0.0, -1
@@ -104,36 +101,29 @@ def postprocess_detections_from_tile(outputs, tile_original_shape_hw, _,
             if class_scores.size > 0: confidence = np.max(class_scores); class_id = np.argmax(class_scores)
             else: continue
         else: continue
-        if confidence >= conf_threshold_tile:
-            x1, y1, x2, y2 = (cx - w / 2), (cy - h / 2), (cx + w / 2), (cy + h / 2)
-            boxes_tile_local_scaled.append([x1, y1, x2, y2]); scores_tile_local.append(confidence); class_ids_tile_local.append(class_id)
+        if confidence >= conf_threshold_tile: x1,y1,x2,y2=(cx-w/2),(cy-h/2),(cx+w/2),(cy+h/2); boxes_tile_local_scaled.append([x1,y1,x2,y2]); scores_tile_local.append(confidence); class_ids_tile_local.append(class_id)
     if not boxes_tile_local_scaled: return np.array([]), np.array([]), np.array([])
-    final_boxes_tile_original_coords = []
-    tile_h_orig, tile_w_orig = tile_original_shape_hw
+    final_boxes_tile_original_coords = []; tile_h_orig, tile_w_orig = tile_original_shape_hw
     for box in boxes_tile_local_scaled:
         b_x1,b_y1,b_x2,b_y2 = box[0]-preprocessing_pad_x,box[1]-preprocessing_pad_y,box[2]-preprocessing_pad_x,box[3]-preprocessing_pad_y
         if preprocessing_ratio == 0: continue
         ot_x1,ot_y1,ot_x2,ot_y2 = b_x1/preprocessing_ratio,b_y1/preprocessing_ratio,b_x2/preprocessing_ratio,b_y2/preprocessing_ratio
-        ot_x1,ot_y1 = np.clip(ot_x1,0,tile_w_orig),np.clip(ot_y1,0,tile_h_orig); ot_x2,ot_y2 = np.clip(ot_x2,0,tile_w_orig),np.clip(ot_y2,0,tile_h_orig)
-        final_boxes_tile_original_coords.append([ot_x1,ot_y1,ot_x2,ot_y2])
+        ot_x1,ot_y1=np.clip(ot_x1,0,tile_w_orig),np.clip(ot_y1,0,tile_h_orig); ot_x2,ot_y2=np.clip(ot_x2,0,tile_w_orig),np.clip(ot_y2,0,tile_h_orig); final_boxes_tile_original_coords.append([ot_x1,ot_y1,ot_x2,ot_y2])
     return np.array(final_boxes_tile_original_coords), np.array(scores_tile_local), np.array(class_ids_tile_local)
 
-def non_max_suppression_global(boxes_xyxy, scores, iou_threshold): # 重命名以区分
-    # ... (与您V2.3中的 non_max_suppression 内容一致) ...
+def non_max_suppression_global(boxes_xyxy, scores, iou_threshold):
     if not isinstance(boxes_xyxy, np.ndarray) or boxes_xyxy.size == 0: return []
     if not isinstance(scores, np.ndarray) or scores.size == 0: return []
     x1,y1,x2,y2 = boxes_xyxy[:,0],boxes_xyxy[:,1],boxes_xyxy[:,2],boxes_xyxy[:,3]; areas=(x2-x1)*(y2-y1); order=scores.argsort()[::-1]; keep=[]
     while order.size > 0:
-        i = order[0]; keep.append(i);_ = order.size;order = order[1:]
+        i = order[0]; keep.append(i); _ = order.size;order = order[1:]
         if _ == 1: break
         xx1=np.maximum(x1[i],x1[order]);yy1=np.maximum(y1[i],y1[order]);xx2=np.minimum(x2[i],x2[order]);yy2=np.minimum(y2[i],y2[order])
         w=np.maximum(0.0,xx2-xx1);h=np.maximum(0.0,yy2-yy1);inter=w*h;ovr=inter/(areas[i]+areas[order]-inter)
         inds=np.where(ovr<=iou_threshold)[0];order=order[inds]
     return keep
 
-# --- 新的预处理和后处理函数 (适配新ONNX模型，基于test_onnx.py) ---
 def preprocess_onnx_for_main(img_data, target_shape_hw):
-    # ... (与 test_onnx.py 中的 preprocess_onnx 内容一致) ...
     img_height_orig, img_width_orig = img_data.shape[:2]; target_h, target_w = target_shape_hw
     ratio = min(target_w / img_width_orig, target_h / img_height_orig); new_w, new_h = int(img_width_orig * ratio), int(img_height_orig * ratio)
     resized_img = cv2.resize(img_data, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
@@ -146,7 +136,6 @@ def postprocess_yolo_onnx_for_main(outputs_onnx, conf_threshold, iou_threshold,
                                    original_shape_hw, model_input_shape_hw,
                                    ratio_preproc, pad_x_preproc, pad_y_preproc,
                                    num_classes=1):
-    # ... (与 test_onnx.py 中修正后的 postprocess_yolo_onnx 内容一致, 处理5属性输出) ...
     raw_output_tensor = np.squeeze(outputs_onnx[0]);
     if raw_output_tensor.ndim != 2: print(f"错误: Main Squeezed ONNX output is not 2D. Shape: {raw_output_tensor.shape}"); return []
     predictions_to_iterate = raw_output_tensor.transpose() if raw_output_tensor.shape[0] < raw_output_tensor.shape[1] else raw_output_tensor
@@ -161,7 +150,7 @@ def postprocess_yolo_onnx_for_main(outputs_onnx, conf_threshold, iou_threshold,
             cx, cy, w, h = box_coords_raw; x1,y1,x2,y2 = cx-w/2,cy-h/2,cx+w/2,cy+h/2
             boxes_candidate.append([x1,y1,x2,y2]); scores_candidate.append(final_confidence); class_ids_candidate.append(class_id)
     if not boxes_candidate: return []
-    keep_indices = non_max_suppression_global(np.array(boxes_candidate), np.array(scores_candidate), iou_threshold) # 使用全局NMS
+    keep_indices = non_max_suppression_global(np.array(boxes_candidate), np.array(scores_candidate), iou_threshold)
     final_detections = []; orig_h, orig_w = original_shape_hw
     for k_idx in keep_indices:
         idx = int(k_idx); box_model_coords = boxes_candidate[idx]; score = scores_candidate[idx]; class_id_val = class_ids_candidate[idx]
@@ -173,10 +162,7 @@ def postprocess_yolo_onnx_for_main(outputs_onnx, conf_threshold, iou_threshold,
         final_detections.append([int(final_x1),int(final_y1),int(final_x2),int(final_y2),score,class_id_val])
     return final_detections
 
-
-# draw_detections 函数 (与V2.3.1一致，可以绘制ROI索引和OCR文本)
 def draw_detections(image, boxes, scores, class_ids, class_names=None, ocr_texts=None, roi_indices=None):
-    # ... (与您V2.3.1中的 draw_detections 内容一致) ...
     img_out = image.copy()
     for i, box in enumerate(boxes):
         x1, y1, x2, y2 = box.astype(int); score = scores[i]; class_id = int(class_ids[i])
@@ -186,56 +172,26 @@ def draw_detections(image, boxes, scores, class_ids, class_names=None, ocr_texts
         if ocr_texts and i < len(ocr_texts) and ocr_texts[i] != "N/A": cv2.putText(img_out,ocr_texts[i],(x1,y1-30),cv2.FONT_HERSHEY_SIMPLEX,0.6,(255,0,0),2)
     return img_out
 
-# --- V2.4.7 主程序 (修正 class_names 定义 和 图像读取检查逻辑) ---
+# --- V2.5.0 主程序 ---
 if __name__ == "__main__":
-    t_start_overall = time.time()
-    timing_profile['0_total_script_execution'] = 0
-    # 使用脚本顶部的 VERSION 变量
-    print(f"--- OBU 检测与识别工具 {VERSION} ---") # VERSION 来自全局配置
-
-    clear_process_photo_directory(process_photo_dir) # process_photo_dir 来自全局配置
-    print(f"'{process_photo_dir}' 文件夹已清理。")
-
-    if not os.path.exists(ONNX_MODEL_PATH): print(f"错误: 模型未找到: {ONNX_MODEL_PATH}"); exit() # ONNX_MODEL_PATH 来自全局配置
-    if not os.path.exists(IMAGE_NAME): print(f"错误: 图片未找到: {IMAGE_NAME}"); exit() # IMAGE_NAME 来自全局配置
-
+    # ... (与V2.4.7完全相同的代码块，直到OCR处理循环之前) ...
+    # ... 我将直接粘贴包含OCR调用修改的完整版本 ...
+    t_start_overall = time.time(); timing_profile['0_total_script_execution'] = 0
+    print(f"--- OBU 检测与识别工具 {VERSION} ---")
+    clear_process_photo_directory(process_photo_dir); print(f"'{process_photo_dir}' 文件夹已清理。")
+    if not os.path.exists(ONNX_MODEL_PATH): print(f"错误: 模型未找到: {ONNX_MODEL_PATH}"); exit()
+    if not os.path.exists(IMAGE_NAME): print(f"错误: 图片未找到: {IMAGE_NAME}"); exit()
     actual_max_area_threshold_px = None
     try:
-        print(f"--- 初始化与模型加载 ---")
-        t_start = time.time()
-        session = onnxruntime.InferenceSession(ONNX_MODEL_PATH, providers=['CPUExecutionProvider'])
-        timing_profile['1_model_loading'] = time.time() - t_start
-        print(f"ONNX模型加载完成 ({timing_profile['1_model_loading']:.2f} 秒)")
-
-        input_cfg = session.get_inputs()[0]
-        input_name = input_cfg.name
-        input_shape_onnx = input_cfg.shape
-
+        print(f"--- 初始化与模型加载 ---"); t_start = time.time(); session = onnxruntime.InferenceSession(ONNX_MODEL_PATH, providers=['CPUExecutionProvider']); timing_profile['1_model_loading'] = time.time() - t_start; print(f"ONNX模型加载完成 ({timing_profile['1_model_loading']:.2f} 秒)")
+        input_cfg = session.get_inputs()[0]; input_name = input_cfg.name; input_shape_onnx = input_cfg.shape
         model_input_h_ref, model_input_w_ref = 640, 640
-        if len(input_shape_onnx) == 4 and isinstance(input_shape_onnx[2], int) and isinstance(input_shape_onnx[3], int):
-            model_input_h_ref, model_input_w_ref = input_shape_onnx[2], input_shape_onnx[3]
-        else:
-            print(f"警告: 模型输入维度包含符号名称: {input_shape_onnx}. 使用参考尺寸 H={model_input_h_ref}, W={model_input_w_ref}")
-
-        # class_names 从脚本顶部的 COCO_CLASSES (应为 ['Barcode']) 获取
-        class_names = COCO_CLASSES
-        print(f"模型输入: {input_name} {input_shape_onnx}. 类别设置为: {class_names}")
-
-        t_start_img_read = time.time() # 重命名 t_start 以免混淆
-        original_image = cv2.imread(IMAGE_NAME)
-        timing_profile['2_image_reading'] = time.time() - t_start_img_read
-
-        if original_image is None:
-            print(f"错误: 无法读取图片: {IMAGE_NAME} (耗时: {timing_profile['2_image_reading']:.2f} 秒)")
-            raise FileNotFoundError(f"无法读取图片: {IMAGE_NAME}")
-
-        orig_img_h, orig_img_w = original_image.shape[:2]
-        print(f"原始图片: {IMAGE_NAME} (H={orig_img_h}, W={orig_img_w}) ({timing_profile['2_image_reading']:.2f} 秒读取)")
-
-        # --- 后续代码与V2.4.6版本一致 ---
-        # (MAX_DETECTION_AREA 计算, apply_tiling 判断, 切块或整图处理逻辑, 面积筛选, OCR循环, 绘图, 时间分析)
-        # ... (我将直接粘贴V2.4.6中这部分的代码)
-
+        if len(input_shape_onnx) == 4 and isinstance(input_shape_onnx[2], int) and isinstance(input_shape_onnx[3], int): model_input_h_ref, model_input_w_ref = input_shape_onnx[2], input_shape_onnx[3]
+        else: print(f"警告: 模型输入维度包含符号名称: {input_shape_onnx}. 使用参考尺寸 H={model_input_h_ref}, W={model_input_w_ref}")
+        class_names = COCO_CLASSES; print(f"模型输入: {input_name} {input_shape_onnx}. 类别设置为: {class_names}")
+        t_start_img_read = time.time(); original_image = cv2.imread(IMAGE_NAME); timing_profile['2_image_reading'] = time.time() - t_start_img_read
+        if original_image is None: print(f"错误: 无法读取图片: {IMAGE_NAME} (耗时: {timing_profile['2_image_reading']:.2f} 秒)"); raise FileNotFoundError(f"无法读取图片: {IMAGE_NAME}")
+        orig_img_h, orig_img_w = original_image.shape[:2]; print(f"原始图片: {IMAGE_NAME} (H={orig_img_h}, W={orig_img_w}) ({timing_profile['2_image_reading']:.2f} 秒读取)")
         if MAX_DETECTION_AREA is not None:
             if isinstance(MAX_DETECTION_AREA, float) and 0<MAX_DETECTION_AREA<=1.0: actual_max_area_threshold_px = (orig_img_h*orig_img_w)*MAX_DETECTION_AREA; print(f"MAX_DETECTION_AREA设为总面积{MAX_DETECTION_AREA*100:.1f}%, 阈值: {actual_max_area_threshold_px:.0f} px².")
             elif isinstance(MAX_DETECTION_AREA, (int,float)) and MAX_DETECTION_AREA > 1: actual_max_area_threshold_px = float(MAX_DETECTION_AREA); print(f"MAX_DETECTION_AREA设为绝对值: {actual_max_area_threshold_px:.0f} px².")
@@ -288,57 +244,104 @@ if __name__ == "__main__":
 
         ocr_texts_for_drawing = []
         recognized_obu_data_list = []
+
         if len(aggregated_boxes) > 0:
-            print(f"--- 最终检测到 {len(aggregated_boxes)} 个OBU的YOLO框, 开始精确裁剪数字区域并进行OCR ---"); t_ocr_total_start=time.time()
-            for i,yolo_box_coords in enumerate(aggregated_boxes):
-                class_id=int(aggregated_class_ids[i]); class_name_str=class_names[class_id] if class_names and 0<=class_id<len(class_names) else f"ClassID:{class_id}"
-                x1_yolo,y1_yolo,x2_yolo,y2_yolo=[int(c) for c in yolo_box_coords]; h_yolo=y2_yolo-y1_yolo; w_yolo=x2_yolo-x1_yolo
-                y1_digit_ideal=y1_yolo; h_digit_ideal=int(h_yolo*DIGIT_ROI_HEIGHT_FACTOR); y2_digit_ideal=y1_yolo+h_digit_ideal # DIGIT_ROI_HEIGHT_FACTOR 来自全局
-                w_digit_expanded=int(w_yolo*DIGIT_ROI_WIDTH_EXPAND_FACTOR); cx_yolo=x1_yolo+w_yolo/2; x1_digit_ideal=int(cx_yolo-w_digit_expanded/2); x2_digit_ideal=int(cx_yolo+w_digit_expanded/2) # DIGIT_ROI_WIDTH_EXPAND_FACTOR 来自全局
-                y1_digit_clipped=max(0,y1_digit_ideal); y2_digit_clipped=min(orig_img_h,y2_digit_ideal); x1_digit_clipped=max(0,x1_digit_ideal); x2_digit_clipped=min(orig_img_w,x2_digit_ideal)
-                current_box_info={"roi_index":i+1,"class":class_name_str,"bbox_yolo":[x1_yolo,y1_yolo,x2_yolo,y2_yolo],"bbox_digit_ocr":[x1_digit_clipped,y1_digit_clipped,x2_digit_clipped,y2_digit_clipped],"confidence_yolo":float(aggregated_scores[i]),"ocr_text_color_digit":"N/A","ocr_text_gray_digit":"N/A","ocr_text_binary_otsu_digit":"N/A","ocr_text_binary_adaptive_digit":"N/A","ocr_final_text":"N/A","ocr_confidence":0.0}
-                print(f"  OBU ROI {current_box_info['roi_index']} (YOLO Box): 类别='{current_box_info['class']}', 边界框={current_box_info['bbox_yolo']}, YOLO置信度={current_box_info['confidence_yolo']:.2f}"); print(f"    Calculated Digit ROI for OCR: {current_box_info['bbox_digit_ocr']}")
-                ocr_text_to_draw="N/A"
-                if paddle_ocr_engine:
-                    dx1,dy1,dx2,dy2=current_box_info['bbox_digit_ocr']
-                    if dx2>dx1 and dy2>dy1:
-                        digit_roi_color=original_image[dy1:dy2,dx1:dx2]; cv2.imwrite(os.path.join(process_photo_dir,f"digit_roi_{current_box_info['roi_index']:03d}_color.png"),digit_roi_color)
-                        digit_roi_gray=cv2.cvtColor(digit_roi_color,cv2.COLOR_BGR2GRAY); cv2.imwrite(os.path.join(process_photo_dir,f"digit_roi_{current_box_info['roi_index']:03d}_gray.png"),digit_roi_gray)
-                        _,digit_roi_binary_otsu=cv2.threshold(digit_roi_gray,0,255,cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU); cv2.imwrite(os.path.join(process_photo_dir,f"digit_roi_{current_box_info['roi_index']:03d}_binary_otsu.png"),digit_roi_binary_otsu)
-                        digit_roi_binary_adaptive=cv2.adaptiveThreshold(digit_roi_gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,11,2); cv2.imwrite(os.path.join(process_photo_dir,f"digit_roi_{current_box_info['roi_index']:03d}_binary_adaptive.png"),digit_roi_binary_adaptive)
-                        images_to_ocr_map={"color_digit":digit_roi_color,"gray_digit":digit_roi_gray,"binary_otsu_digit":digit_roi_binary_otsu,"binary_adaptive_digit":digit_roi_binary_adaptive}
+            print(f"--- 最终检测到 {len(aggregated_boxes)} 个OBU的YOLO框, 开始精确裁剪数字区域并进行OCR ---")
+            t_ocr_total_start = time.time()
+
+            for i, yolo_box_coords in enumerate(aggregated_boxes):
+                class_id = int(aggregated_class_ids[i])
+                class_name_str = class_names[class_id] if class_names and 0 <= class_id < len(class_names) else f"ClassID:{class_id}"
+
+                x1_yolo, y1_yolo, x2_yolo, y2_yolo = [int(c) for c in yolo_box_coords]
+                h_yolo = y2_yolo - y1_yolo
+                w_yolo = x2_yolo - x1_yolo
+
+                # --- 数字ROI计算逻辑 V2.4.7 ---
+                y1_digit_ideal = y1_yolo + int(h_yolo * DIGIT_ROI_Y_OFFSET_FACTOR)
+                h_digit_ideal = int(h_yolo * DIGIT_ROI_HEIGHT_FACTOR)
+                y2_digit_ideal = y1_digit_ideal + h_digit_ideal
+
+                w_digit_expanded = int(w_yolo * DIGIT_ROI_WIDTH_EXPAND_FACTOR)
+                cx_yolo = x1_yolo + w_yolo / 2
+                x1_digit_ideal = int(cx_yolo - w_digit_expanded / 2)
+                x2_digit_ideal = int(cx_yolo + w_digit_expanded / 2)
+                # --- 结束数字ROI计算逻辑 ---
+
+                y1_digit_clipped = max(0, y1_digit_ideal); y2_digit_clipped = min(orig_img_h, y2_digit_ideal)
+                x1_digit_clipped = max(0, x1_digit_ideal); x2_digit_clipped = min(orig_img_w, x2_digit_ideal)
+
+                current_box_info = {
+                    "roi_index": i + 1, "class": class_name_str,
+                    "bbox_yolo": [x1_yolo, y1_yolo, x2_yolo, y2_yolo],
+                    "bbox_digit_ocr": [x1_digit_clipped, y1_digit_clipped, x2_digit_clipped, y2_digit_clipped],
+                    "confidence_yolo": float(aggregated_scores[i]),
+                    "ocr_text_color_digit": "N/A", "ocr_text_gray_digit": "N/A",
+                    "ocr_text_binary_otsu_digit": "N/A", "ocr_text_binary_adaptive_digit": "N/A",
+                    "ocr_final_text": "N/A", "ocr_confidence": 0.0
+                }
+                print(f"  OBU ROI {current_box_info['roi_index']} (YOLO Box): 类别='{current_box_info['class']}', "
+                      f"边界框={current_box_info['bbox_yolo']}, YOLO置信度={current_box_info['confidence_yolo']:.2f}")
+                print(f"    Calculated Digit ROI for OCR: {current_box_info['bbox_digit_ocr']}")
+
+                ocr_text_to_draw = "N/A"
+                if ocr_predictor: # 使用全局的 ocr_predictor (可能是 PaddleOCR Mobile 或 PaddleX Server Rec)
+                    dx1, dy1, dx2, dy2 = current_box_info['bbox_digit_ocr']
+                    if dx2 > dx1 and dy2 > dy1:
+                        digit_roi_color = original_image[dy1:dy2, dx1:dx2]
+                        cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_color.png"), digit_roi_color)
+                        digit_roi_gray = cv2.cvtColor(digit_roi_color, cv2.COLOR_BGR2GRAY); cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_gray.png"), digit_roi_gray)
+                        _, digit_roi_binary_otsu = cv2.threshold(digit_roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU); cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_binary_otsu.png"), digit_roi_binary_otsu)
+                        digit_roi_binary_adaptive = cv2.adaptiveThreshold(digit_roi_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2); cv2.imwrite(os.path.join(process_photo_dir, f"digit_roi_{current_box_info['roi_index']:03d}_binary_adaptive.png"), digit_roi_binary_adaptive)
+
+                        images_to_ocr_map = {"color_digit":digit_roi_color,"gray_digit":digit_roi_gray,"binary_otsu_digit":digit_roi_binary_otsu,"binary_adaptive_digit":digit_roi_binary_adaptive}
                         ocr_inputs_to_try_cfg=[];
-                        if OCR_PREPROCESS_TYPE_TO_USE=="all": ocr_inputs_to_try_cfg=list(images_to_ocr_map.keys()) # OCR_PREPROCESS_TYPE_TO_USE 来自全局
+                        if OCR_PREPROCESS_TYPE_TO_USE=="all": ocr_inputs_to_try_cfg=list(images_to_ocr_map.keys())
                         elif isinstance(OCR_PREPROCESS_TYPE_TO_USE,str) and OCR_PREPROCESS_TYPE_TO_USE in images_to_ocr_map: ocr_inputs_to_try_cfg=[OCR_PREPROCESS_TYPE_TO_USE]
                         elif isinstance(OCR_PREPROCESS_TYPE_TO_USE,list): ocr_inputs_to_try_cfg=[key for key in OCR_PREPROCESS_TYPE_TO_USE if key in images_to_ocr_map]
                         if not ocr_inputs_to_try_cfg: ocr_inputs_to_try_cfg=["binary_otsu_digit"]; print(f"警告: OCR_PREPROCESS_TYPE_TO_USE 配置无效，默认尝试 'binary_otsu_digit'")
+
                         best_ocr_text_for_this_roi="N/A"; highest_ocr_confidence=0.0
                         for preprocess_type_key in ocr_inputs_to_try_cfg:
                             image_to_process_single_channel=images_to_ocr_map[preprocess_type_key]
                             if image_to_process_single_channel.ndim==2: image_to_process_bgr=cv2.cvtColor(image_to_process_single_channel,cv2.COLOR_GRAY2BGR)
                             elif image_to_process_single_channel.ndim==3 and image_to_process_single_channel.shape[2]==3: image_to_process_bgr=image_to_process_single_channel
                             else: print(f"错误: 无法处理图像 {preprocess_type_key} 的通道数: {image_to_process_single_channel.shape}"); continue
-                            print(f"    Attempting OCR with {preprocess_type_key} for Digit ROI {current_box_info['roi_index']}...")
+
+                            print(f"    Attempting OCR with {preprocess_type_key} using '{OCR_ENGINE_TO_USE}' for Digit ROI {current_box_info['roi_index']}...")
                             try:
-                                ocr_result_list=paddle_ocr_engine.ocr(image_to_process_bgr)
-                                if ocr_result_list and isinstance(ocr_result_list,list) and len(ocr_result_list)>0:
-                                    if ocr_result_list[0] is None: print(f"      PaddleOCR ({preprocess_type_key}): Result is None.")
-                                    elif isinstance(ocr_result_list[0],dict):
-                                        image_result_dict=ocr_result_list[0]; extracted_texts_list=image_result_dict.get('rec_texts'); rec_scores_list=image_result_dict.get('rec_scores')
-                                        if isinstance(extracted_texts_list,list) and isinstance(rec_scores_list,list) and len(extracted_texts_list)==len(rec_scores_list) and extracted_texts_list:
-                                            full_recognized_text="".join(extracted_texts_list).replace(" ",""); ocr_confidence=rec_scores_list[0] if rec_scores_list else 0.0; print(f"      PaddleOCR ({preprocess_type_key}) Result: '{full_recognized_text}' (Conf: {ocr_confidence:.2f})")
-                                            current_box_info[f"ocr_text_{preprocess_type_key}"]=full_recognized_text
-                                            if best_ocr_text_for_this_roi=="N/A" or ocr_confidence>highest_ocr_confidence: best_ocr_text_for_this_roi=full_recognized_text; highest_ocr_confidence=ocr_confidence
-                                        elif extracted_texts_list is None or rec_scores_list is None: print(f"      PaddleOCR ({preprocess_type_key}): 'rec_texts' or 'rec_scores' key not found.")
-                                        elif not extracted_texts_list: print(f"      PaddleOCR ({preprocess_type_key}): 'rec_texts' is empty.")
-                                        else: print(f"      PaddleOCR ({preprocess_type_key}): Texts/Scores mismatch.")
-                                    else: print(f"      PaddleOCR ({preprocess_type_key}): Result[0] not a dict.")
-                                else: print(f"      PaddleOCR ({preprocess_type_key}): No valid result list.");
-                            except Exception as ocr_e: print(f"      Error during PaddleOCR ({preprocess_type_key}): {ocr_e}")
+                                raw_recognized_text = ""; ocr_score = 0.0
+                                if OCR_ENGINE_TO_USE == "paddle_ocr_mobile":
+                                    ocr_result_list = ocr_predictor.ocr(image_to_process_bgr)
+                                    if ocr_result_list and isinstance(ocr_result_list, list) and len(ocr_result_list) > 0 and ocr_result_list[0] is not None and isinstance(ocr_result_list[0], list):
+                                        temp_texts = []; temp_scores = []
+                                        for line_info in ocr_result_list[0]:
+                                            if line_info and len(line_info) == 2 and isinstance(line_info[1], tuple) and len(line_info[1]) == 2:
+                                                temp_texts.append(line_info[1][0]); temp_scores.append(line_info[1][1])
+                                        if temp_texts: raw_recognized_text = "".join(temp_texts); ocr_score = max(temp_scores) if temp_scores else 0.0
+                                elif OCR_ENGINE_TO_USE == "paddle_ocr_server_paddlex":
+                                    rec_results_generator = ocr_predictor.predict([image_to_process_bgr.copy()])
+                                    recognition_result_dict = None
+                                    try: recognition_result_dict = next(rec_results_generator)
+                                    except StopIteration: pass
+                                    if isinstance(recognition_result_dict, dict):
+                                        raw_recognized_text = recognition_result_dict.get('rec_text', ""); ocr_score = recognition_result_dict.get('rec_score', 0.0)
+
+                                if raw_recognized_text:
+                                    digits_only_text = "".join(re.findall(r'\d', raw_recognized_text))
+                                    print(f"      OCR ('{OCR_ENGINE_TO_USE}', {preprocess_type_key}) Raw='{raw_recognized_text}', Digits='{digits_only_text}', Score={ocr_score:.2f}")
+                                    current_box_info[f"ocr_text_{preprocess_type_key}"] = digits_only_text # Store extracted digits
+                                    if digits_only_text and (best_ocr_text_for_this_roi=="N/A" or ocr_score > highest_ocr_confidence) : # Prioritize if it has digits
+                                        best_ocr_text_for_this_roi=digits_only_text; highest_ocr_confidence=ocr_score
+                                elif OCR_ENGINE_TO_USE == "paddle_ocr_mobile" and ocr_result_list and ocr_result_list[0] is None : print(f"      PaddleOCR Mobile ({preprocess_type_key}): Result is None.")
+                                else: print(f"      OCR Engine ('{OCR_ENGINE_TO_USE}', {preprocess_type_key}): No raw text or unexpected result.")
+
+                            except Exception as ocr_e: print(f"      Error during OCR ({preprocess_type_key}): {ocr_e}")
                         current_box_info["ocr_final_text"]=best_ocr_text_for_this_roi; current_box_info["ocr_confidence"]=highest_ocr_confidence; ocr_text_to_draw=best_ocr_text_for_this_roi
                     else: print(f"    Skipping OCR for invalid/zero-size Digit ROI.")
-                else: print("    PaddleOCR engine not available.")
-                recognized_obu_data_list.append(current_box_info); ocr_texts_for_drawing.append(ocr_text_to_draw); print("-"*30)
+                else: print(f"    OCR Engine ('{OCR_ENGINE_TO_USE}') not initialized. Skipping OCR.")
+                recognized_obu_data_list.append(current_box_info); ocr_texts_for_drawing.append(ocr_text_to_draw); print("-" * 30)
+
             timing_profile['7_ocr_processing_total']=time.time()-t_ocr_total_start; print(f"--- 所有ROI的OCR处理完成 ({timing_profile['7_ocr_processing_total']:.3f} 秒) ---")
             print("\n--- 初步识别结果列表 (未映射到矩阵) ---");
             for obu_data in recognized_obu_data_list:

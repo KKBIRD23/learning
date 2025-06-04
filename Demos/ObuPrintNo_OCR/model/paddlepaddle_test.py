@@ -28,7 +28,7 @@ except Exception as e:
 # (可选) 进行一次简单的识别测试
 if ocr_engine:
     test_image_content = "123 ABC"
-    img_path_test = "simple_test_ocr.png"
+    img_path_test = r"D:\WorkSpaces\Python\WorkSpaces\Demos\ObuPrintNo_OCR\model\model\PaddleOCR\3.jpg"
 
     try:
         from PIL import Image, ImageDraw, ImageFont
