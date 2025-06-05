@@ -12,6 +12,7 @@ import atexit
 import logging
 from logging.handlers import RotatingFileHandler
 import uuid
+from typing import List, Dict, Tuple, Any, Optional
 
 # --- 从新模块导入 ---
 import config # 导入所有配置

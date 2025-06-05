@@ -3,7 +3,7 @@
 import os
 
 # --- 基础路径配置 ---
-BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")) # 假设app.py在Service目录下
+BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) # 假设app.py在Service目录下
 
 # --- 模型路径 ---
 ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "BarCode_Detect", "BarCode_Detect_dynamic.onnx")
