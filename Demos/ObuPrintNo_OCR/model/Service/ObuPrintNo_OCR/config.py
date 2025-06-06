@@ -45,11 +45,12 @@ LAYOUT_TOTAL_OBUS_EXPECTED = 50 # 用于判断会话是否完成
 LAYOUT_MIN_CORE_ANCHORS_FOR_LEARNING = 5
 LAYOUT_MIN_VALID_ROWS_FOR_LEARNING = 1
 LAYOUT_MIN_ANCHORS_PER_RELIABLE_ROW = 2
-LAYOUT_ROW_GROUP_Y_THRESHOLD_FACTOR = 0.4 # 用于YOLO锚点物理行分组的阈值因子
+LAYOUT_ROW_GROUP_Y_THRESHOLD_FACTOR = 0.4 # 用于YOLO锚点物理行分组的阈值因子 (乘以avg_obu_h)
+LAYOUT_COL_GROUP_X_THRESHOLD_FACTOR = 0.6 # 新增：用于YOLO锚点物理列分组的阈值因子 (乘以avg_obu_w)
 
 # 参照物定位与映射相关阈值
-LAYOUT_Y_MATCH_THRESHOLD_FACTOR = 0.75 # Y坐标匹配阈值 = avg_row_height * factor
-LAYOUT_X_MATCH_THRESHOLD_FACTOR = 0.75 # X坐标匹配阈值 = avg_obu_width * factor
+LAYOUT_Y_MATCH_THRESHOLD_FACTOR = 0.85 # Y坐标匹配阈值 = avg_row_height * factor (临时调大)
+LAYOUT_X_MATCH_THRESHOLD_FACTOR = 0.85 # X坐标匹配阈值 = avg_obu_width * factor (临时调大)
 
 # --- 过程图片保存 ---
 SAVE_PROCESS_PHOTOS = True
