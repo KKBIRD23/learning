@@ -38,19 +38,21 @@ OCR_NUM_WORKERS = 4 # 并行OCR工作进程数 (0或1表示串行)
 LAYOUT_EXPECTED_TOTAL_ROWS = 13
 LAYOUT_REGULAR_ROWS_COUNT = 12 # 逻辑上的常规行数 (不含特殊行)
 LAYOUT_REGULAR_COLS_COUNT = 4
-LAYOUT_SPECIAL_ROW_COLS_COUNT = 2
+LAYOUT_SPECIAL_ROW_COLS_COUNT = 2 # 特殊行期望的列数
 LAYOUT_TOTAL_OBUS_EXPECTED = 50 # 用于判断会话是否完成
+
+# 用于 _analyze_layout_by_xy_clustering 的【固定像素距离】阈值
+# 您需要根据实际OBU在图像中的像素间距来调整这些初始值
+# 例如，如果同一行的OBU在Y方向上通常偏差在20像素内，那么Y_THRESHOLD可以设为25-30
+# 如果同一列的OBU在X方向上通常偏差在80像素内，那么X_THRESHOLD可以设为90-100
+LAYOUT_Y_AXIS_GROUPING_PIXEL_THRESHOLD = 50  # Y轴方向上被认为是同一行的最大像素距离差 (建议值，请调整)
+LAYOUT_X_AXIS_GROUPING_PIXEL_THRESHOLD = 400 # X轴方向上被认为是同一列的最大像素距离差 (建议值，请调整)
 
 # 首次布局学习相关阈值 (来自 learn_initial_layout_from_yolo_v81 或类似函数的常量)
 LAYOUT_MIN_CORE_ANCHORS_FOR_LEARNING = 5
-LAYOUT_MIN_VALID_ROWS_FOR_LEARNING = 1
-LAYOUT_MIN_ANCHORS_PER_RELIABLE_ROW = 2
-LAYOUT_ROW_GROUP_Y_THRESHOLD_FACTOR = 0.4 # 用于YOLO锚点物理行分组的阈值因子 (乘以avg_obu_h)
-LAYOUT_COL_GROUP_X_THRESHOLD_FACTOR = 0.6 # 新增：用于YOLO锚点物理列分组的阈值因子 (乘以avg_obu_w)
 
-# 参照物定位与映射相关阈值
-LAYOUT_Y_MATCH_THRESHOLD_FACTOR = 0.85 # Y坐标匹配阈值 = avg_row_height * factor (临时调大)
-LAYOUT_X_MATCH_THRESHOLD_FACTOR = 0.85 # X坐标匹配阈值 = avg_obu_width * factor (临时调大)
+# 用于 _learn_initial_stable_layout_params (现在主要是统计)
+LAYOUT_MIN_CORE_ANCHORS_FOR_STATS = 3 # 用于统计稳定参数的最小锚点数 (替代之前的LEARNING)
 
 # --- 过程图片保存 ---
 SAVE_PROCESS_PHOTOS = True

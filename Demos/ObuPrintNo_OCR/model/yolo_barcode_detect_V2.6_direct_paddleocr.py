@@ -35,8 +35,8 @@ USE_DOC_UNWARPING = False # 是否使用文本图像矫正 (通常单张OBU图�
 # 可能仍会导致PaddleOCR加载其默认的Mobile系列模型。
 # 要强制使用Server模型，更可靠的方式是手动下载Server模型，
 # 然后通过 det_model_dir 和 rec_model_dir 参数指定它们的本地路径 (见下方注释掉的参数)。
-TEXT_DETECTION_MODEL_NAME_CFG = None # "PP-OCRv5_server_det" # 尝试Server版名称 (当前测试显示可能无效)
-TEXT_RECOGNITION_MODEL_NAME_CFG = None # "PP-OCRv5_server_rec" # 尝试Server版名称 (当前测试显示可能无效)
+TEXT_DETECTION_MODEL_NAME_CFG = "PP-OCRv5_mobile_det" # "PP-OCRv5_server_det" # 尝试Server版名称 (当前测试显示可能无效)
+TEXT_RECOGNITION_MODEL_NAME_CFG = "PP-OCRv5_mobile_rec" # "PP-OCRv5_server_rec" # 尝试Server版名称 (当前测试显示可能无效)
 
 # 如果已手动下载Server模型，请取消注释并设置以下路径:
 # DET_MODEL_DIR_LOCAL_CFG = r"D:/PaddleOCR_Models/PP-OCRv5_server_det" # 示例路径

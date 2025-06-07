@@ -1,235 +1,222 @@
 # layout_and_state_manager.py
 import cv2
 import numpy as np
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import List, Dict, Tuple, Any, Optional
 import os
+import logging # 确保导入 logging
 
 from config import (
     LAYOUT_EXPECTED_TOTAL_ROWS,
     LAYOUT_REGULAR_COLS_COUNT,
     LAYOUT_SPECIAL_ROW_COLS_COUNT,
-    LAYOUT_MIN_CORE_ANCHORS_FOR_LEARNING, # 用于首次学习的最小锚点数
-    # LAYOUT_MIN_VALID_ROWS_FOR_LEARNING, # 可能不再直接使用，由聚类结果决定
-    # LAYOUT_MIN_ANCHORS_PER_RELIABLE_ROW, # 同上
-    LAYOUT_ROW_GROUP_Y_THRESHOLD_FACTOR,
-    LAYOUT_COL_GROUP_X_THRESHOLD_FACTOR, # 新增
+    LAYOUT_MIN_CORE_ANCHORS_FOR_STATS,
+    LAYOUT_Y_AXIS_GROUPING_PIXEL_THRESHOLD,
+    LAYOUT_X_AXIS_GROUPING_PIXEL_THRESHOLD,
     VALID_OBU_CODES
 )
 
-# 新的核心函数：通过XY独立聚类分析布局，并为每个YOLO框附加单帧逻辑行列号
+# 核心函数：通过XY独立聚类分析布局，并为每个YOLO框附加单帧逻辑行列号
 def _analyze_layout_by_xy_clustering(
-    yolo_detections: List[Dict[str, Any]], # 包含 cx,cy,w,h
-    avg_obu_w: float, # 从所有检测中统计得到的平均OBU宽度
-    avg_obu_h: float, # 从所有检测中统计得到的平均OBU高度
-    config_threshold_factors: Dict[str, float], # 包含行和列的分组阈值因子
+    yolo_detections: List[Dict[str, Any]],
+    y_pixel_threshold: float,
+    x_pixel_threshold: float,
     logger: Any,
     session_id_for_log: str = "N/A"
 ) -> List[Dict[str, Any]]:
-    """
-    通过对YOLO检测结果的X、Y坐标独立进行阈值分组，为每个检测框附加单帧内的相对逻辑行列号。
-    Args:
-        yolo_detections: YOLO检测结果列表。
-        avg_obu_w: 平均OBU宽度，用于计算X轴分组阈值。
-        avg_obu_h: 平均OBU高度，用于计算Y轴分组阈值。
-        config_threshold_factors: 包含 'row_y_factor' 和 'col_x_factor'。
-        logger: 日志记录器。
-    Returns:
-        带有 'frame_r' 和 'frame_c' 属性的YOLO检测结果列表。
-    """
-    log_prefix = f"会话 {session_id_for_log} (_analyze_xy_clustering):"
+    log_prefix = f"会话 {session_id_for_log} (_analyze_xy_clustering V2.1_RobustGrouping):" # 版本更新
     logger.info(f"{log_prefix} 开始通过XY独立聚类分析布局，输入锚点数: {len(yolo_detections)}")
 
     if not yolo_detections:
+        logger.warning(f"{log_prefix} 无YOLO检测结果，无法进行聚类。")
         return []
 
+    detections_with_rc = [det.copy() for det in yolo_detections]
+
     # --- Y轴聚类 (确定 frame_r) ---
-    y_coords = np.array([det['cy'] for det in yolo_detections])
-    sorted_y_indices = np.argsort(y_coords)
+    y_data_for_sort = [{'original_list_idx': i, 'cy': det['cy']} for i, det in enumerate(detections_with_rc)]
+    y_data_for_sort.sort(key=lambda item: item['cy'])
 
-    y_threshold = avg_obu_h * config_threshold_factors.get("row_y_factor", LAYOUT_ROW_GROUP_Y_THRESHOLD_FACTOR)
-    logger.info(f"{log_prefix} Y轴分组阈值: {y_threshold:.1f} (avg_h={avg_obu_h:.1f})")
+    logger.info(f"{log_prefix} Y轴分组固定像素阈值: {y_pixel_threshold:.1f}")
 
-    y_groups = []
-    if sorted_y_indices.size > 0:
-        current_y_group = [sorted_y_indices[0]]
-        for i in range(1, len(sorted_y_indices)):
-            idx_curr = sorted_y_indices[i]
-            idx_prev_in_group = current_y_group[-1]
-            if abs(y_coords[idx_curr] - y_coords[idx_prev_in_group]) < y_threshold:
-                current_y_group.append(idx_curr)
+    y_groups_indices: List[List[int]] = []
+    if y_data_for_sort:
+        current_y_group_indices = [y_data_for_sort[0]['original_list_idx']]
+        current_group_ref_y = y_data_for_sort[0]['cy'] # 使用组内第一个元素的Y作为初始参考
+
+        for i in range(1, len(y_data_for_sort)):
+            item_curr = y_data_for_sort[i]
+            # 与当前组的参考Y（可以是第一个元素，或动态更新的均值）比较
+            if abs(item_curr['cy'] - current_group_ref_y) < y_pixel_threshold:
+                current_y_group_indices.append(item_curr['original_list_idx'])
+                # 更新参考Y为当前组内所有元素的平均Y，使分组更稳定
+                current_group_ref_y = np.mean([detections_with_rc[idx]['cy'] for idx in current_y_group_indices])
             else:
-                y_groups.append(list(current_y_group))
-                current_y_group = [idx_curr]
-        y_groups.append(list(current_y_group))
+                y_groups_indices.append(list(current_y_group_indices))
+                current_y_group_indices = [item_curr['original_list_idx']]
+                current_group_ref_y = item_curr['cy']
+        y_groups_indices.append(list(current_y_group_indices))
 
-    # 为每个YOLO检测结果赋予 frame_r
-    detections_with_frame_r = [det.copy() for det in yolo_detections] # 创建副本以修改
-    for r_idx, group_indices in enumerate(y_groups):
-        group_avg_y = np.mean([y_coords[i] for i in group_indices])
-        logger.debug(f"{log_prefix} Y组 {r_idx} (avg_y={group_avg_y:.0f}): 包含 {len(group_indices)} 个锚点")
-        for yolo_original_list_idx in group_indices:
-            detections_with_frame_r[yolo_original_list_idx]['frame_r'] = r_idx
+    for r_idx, group_indices in enumerate(y_groups_indices):
+        avg_y_of_group = np.mean([detections_with_rc[original_idx]['cy'] for original_idx in group_indices])
+        logger.debug(f"{log_prefix} Y组 {r_idx} (avg_cy={avg_y_of_group:.0f}): 包含detections_with_rc索引 {group_indices}")
+        for original_idx in group_indices:
+            detections_with_rc[original_idx]['frame_r'] = r_idx
+            detections_with_rc[original_idx]['frame_r_avg_cy'] = avg_y_of_group
 
-    logger.info(f"{log_prefix} Y轴聚类完成，得到 {len(y_groups)} 个逻辑行组。")
+    logger.info(f"{log_prefix} Y轴聚类完成，得到 {len(y_groups_indices)} 个单帧逻辑行组。")
 
     # --- X轴聚类 (确定 frame_c) ---
-    x_coords = np.array([det['cx'] for det in detections_with_frame_r]) # 使用已附加frame_r的列表
-    sorted_x_indices = np.argsort(x_coords)
+    x_data_for_sort = [{'original_list_idx': i, 'cx': det['cx']} for i, det in enumerate(detections_with_rc)]
+    x_data_for_sort.sort(key=lambda item: item['cx'])
 
-    x_threshold = avg_obu_w * config_threshold_factors.get("col_x_factor", LAYOUT_COL_GROUP_X_THRESHOLD_FACTOR)
-    logger.info(f"{log_prefix} X轴分组阈值: {x_threshold:.1f} (avg_w={avg_obu_w:.1f})")
+    logger.info(f"{log_prefix} X轴分组固定像素阈值: {x_pixel_threshold:.1f}")
 
-    x_groups = []
-    if sorted_x_indices.size > 0:
-        current_x_group = [sorted_x_indices[0]]
-        for i in range(1, len(sorted_x_indices)):
-            idx_curr = sorted_x_indices[i]
-            idx_prev_in_group = current_x_group[-1]
-            if abs(x_coords[idx_curr] - x_coords[idx_prev_in_group]) < x_threshold:
-                current_x_group.append(idx_curr)
+    x_groups_indices: List[List[int]] = []
+    if x_data_for_sort:
+        current_x_group_indices = [x_data_for_sort[0]['original_list_idx']]
+        current_group_ref_x = x_data_for_sort[0]['cx']
+        for i in range(1, len(x_data_for_sort)):
+            item_curr = x_data_for_sort[i]
+            if abs(item_curr['cx'] - current_group_ref_x) < x_pixel_threshold:
+                current_x_group_indices.append(item_curr['original_list_idx'])
+                current_group_ref_x = np.mean([detections_with_rc[idx]['cx'] for idx in current_x_group_indices])
             else:
-                x_groups.append(list(current_x_group))
-                current_x_group = [idx_curr]
-        x_groups.append(list(current_x_group))
+                x_groups_indices.append(list(current_x_group_indices))
+                current_x_group_indices = [item_curr['original_list_idx']]
+                current_group_ref_x = item_curr['cx']
+        x_groups_indices.append(list(current_x_group_indices))
 
-    # 为每个YOLO检测结果赋予 frame_c
-    # 注意：detections_with_frame_r 已经是副本，可以直接修改
-    for c_idx, group_indices in enumerate(x_groups):
-        group_avg_x = np.mean([x_coords[i] for i in group_indices])
-        logger.debug(f"{log_prefix} X组 {c_idx} (avg_x={group_avg_x:.0f}): 包含 {len(group_indices)} 个锚点")
-        for yolo_original_list_idx in group_indices:
-            detections_with_frame_r[yolo_original_list_idx]['frame_c'] = c_idx
-            # 同时记录一下这个分组的平均X，可能用于后续统计col_x_estimates
-            detections_with_frame_r[yolo_original_list_idx]['frame_c_avg_x'] = group_avg_x
+    for c_idx, group_indices in enumerate(x_groups_indices):
+        avg_x_of_group = np.mean([detections_with_rc[original_idx]['cx'] for original_idx in group_indices])
+        logger.debug(f"{log_prefix} X组 {c_idx} (avg_cx={avg_x_of_group:.0f}): 包含detections_with_rc索引 {group_indices}")
+        for original_idx in group_indices:
+            detections_with_rc[original_idx]['frame_c'] = c_idx
+            detections_with_rc[original_idx]['frame_c_avg_cx'] = avg_x_of_group
 
+    logger.info(f"{log_prefix} X轴聚类完成，得到 {len(x_groups_indices)} 个单帧逻辑列组。")
 
-    logger.info(f"{log_prefix} X轴聚类完成，得到 {len(x_groups)} 个逻辑列组。")
-
-    # 检查是否有未分配 frame_r 或 frame_c 的情况 (理论上不应发生，除非输入为空)
-    for i, det in enumerate(detections_with_frame_r):
+    for i, det in enumerate(detections_with_rc):
         if 'frame_r' not in det:
-            logger.warning(f"{log_prefix} 锚点 {i} (cx={det['cx']}, cy={det['cy']}) 未分配 frame_r！")
-            det['frame_r'] = -1 # 标记为无效
+            logger.warning(f"{log_prefix} 锚点 (原始YOLO索引 {det.get('original_index', 'N/A')}) 未分配 frame_r！赋予-1。")
+            det['frame_r'] = -1
         if 'frame_c' not in det:
-            logger.warning(f"{log_prefix} 锚点 {i} (cx={det['cx']}, cy={det['cy']}) 未分配 frame_c！")
-            det['frame_c'] = -1 # 标记为无效
+            logger.warning(f"{log_prefix} 锚点 (原始YOLO索引 {det.get('original_index', 'N/A')}) 未分配 frame_c！赋予-1。")
+            det['frame_c'] = -1
 
-    return detections_with_frame_r
+    return detections_with_rc
 
-
-# _learn_initial_stable_layout_params 现在基于 _analyze_layout_by_xy_clustering 的结果进行统计
-def _learn_initial_stable_layout_params(
-    yolo_detections_with_frame_rc: List[Dict[str, Any]], # 已包含 frame_r, frame_c
-    image_wh: Tuple[int, int],
+# 统计函数，并加入特殊行识别逻辑
+def _create_frame_layout_stats_and_identify_special_row(
+    yolo_detections_with_frame_rc: List[Dict[str, Any]],
     session_config: Dict[str, Any],
     logger: Any,
     session_id_for_log: str = "N/A"
-) -> Optional[Dict[str, Any]]:
-    log_prefix = f"会话 {session_id_for_log} (_learn_initial_stable_layout V2.0_XYClusterBased):"
-    logger.critical(f"{log_prefix} CRITICAL_LOG: 基于XY聚类结果学习稳定布局。输入锚点数: {len(yolo_detections_with_frame_rc)}")
+) -> Dict[str, Any]: # 返回包含统计信息和特殊行判断的字典
+    log_prefix = f"会话 {session_id_for_log} (_create_frame_stats_special_row V3.2):"
+    logger.info(f"{log_prefix} 基于XY聚类结果统计参数并识别特殊行。输入锚点数: {len(yolo_detections_with_frame_rc)}")
 
-    if not yolo_detections_with_frame_rc:
-        logger.critical(f"{log_prefix} CRITICAL_LOG: 无带frame_r/c的锚点输入。学习失败，返回None。")
-        return None
-
-    # 1. 统计平均OBU尺寸 (从原始YOLO检测中获取，因为frame_rc不影响尺寸)
-    avg_obu_w = np.median([a['w'] for a in yolo_detections_with_frame_rc if a.get('w', 0) > 0])
-    avg_obu_h = np.median([a['h'] for a in yolo_detections_with_frame_rc if a.get('h', 0) > 0])
-    if not (avg_obu_w and avg_obu_h and avg_obu_w > 5 and avg_obu_h > 5):
-        logger.critical(f"{log_prefix} CRITICAL_LOG: 统计得到的OBU平均尺寸 (W:{avg_obu_w}, H:{avg_obu_h}) 无效。学习失败，返回None。")
-        return None
-    logger.info(f"{log_prefix} OBU平均像素尺寸 (中位数): W={avg_obu_w:.1f}, H={avg_obu_h:.1f}")
-
-    # 2. 统计各逻辑行/列的平均物理坐标，并计算平均行高/列间距
-    row_physics_y_map: Dict[int, List[float]] = {} # frame_r -> list of cy
-    col_physics_x_map: Dict[int, List[float]] = {} # frame_c -> list of cx
-
-    for det in yolo_detections_with_frame_rc:
-        frame_r, frame_c = det.get('frame_r', -1), det.get('frame_c', -1)
-        if frame_r != -1:
-            row_physics_y_map.setdefault(frame_r, []).append(det['cy'])
-        if frame_c != -1:
-            col_physics_x_map.setdefault(frame_c, []).append(det['cx'])
-
-    if not row_physics_y_map or not col_physics_x_map:
-        logger.critical(f"{log_prefix} CRITICAL_LOG: 未能从聚类结果中统计出行/列物理坐标。学习失败，返回None。")
-        return None
-
-    # 计算每行的平均Y (row_y_estimates_initial_guess)
-    # 和每列的平均X (col_x_estimates_regular)
-    num_frame_rows = max(row_physics_y_map.keys()) + 1 if row_physics_y_map else 0
-    num_frame_cols = max(col_physics_x_map.keys()) + 1 if col_physics_x_map else 0
-
-    # 我们期望的逻辑行/列数
-    expected_total_rows = session_config.get("expected_total_rows", LAYOUT_EXPECTED_TOTAL_ROWS)
-    expected_regular_cols = session_config.get("regular_cols_count", LAYOUT_REGULAR_COLS_COUNT)
-
-    row_y_estimates_initial_guess = [np.mean(row_physics_y_map.get(r, [0])) for r in range(num_frame_rows)]
-    # 如果聚类出的行数少于期望，需要填充或外推 (简化：暂时只用聚类出的)
-    # TODO: 如果 num_frame_rows < expected_total_rows，需要更智能的填充/外推逻辑
-    if num_frame_rows < expected_total_rows and num_frame_rows > 0:
-        logger.warning(f"{log_prefix} 聚类行数 {num_frame_rows} 少于期望 {expected_total_rows}。Y估算可能不完整。")
-        # 简单填充：用最后一个有效行的Y加上平均行高（如果能算出来）
-        last_valid_y = row_y_estimates_initial_guess[-1]
-        # 计算一个临时的平均行高用于填充
-        temp_avg_row_h_for_fill = avg_obu_h * 1.2
-        if len(row_y_estimates_initial_guess) >=2:
-            gaps = np.diff(sorted(list(set(row_y_estimates_initial_guess)))) # 去重并排序后计算差值
-            if gaps.size > 0: temp_avg_row_h_for_fill = np.median(gaps)
-
-        for i_fill in range(num_frame_rows, expected_total_rows):
-            row_y_estimates_initial_guess.append(last_valid_y + (i_fill - num_frame_rows + 1) * temp_avg_row_h_for_fill)
-
-
-    col_x_estimates_regular = [np.mean(col_physics_x_map.get(c, [0])) for c in range(num_frame_cols)]
-    # TODO: 如果 num_frame_cols < expected_regular_cols，需要填充/外推
-    if num_frame_cols < expected_regular_cols and num_frame_cols > 0:
-        logger.warning(f"{log_prefix} 聚类列数 {num_frame_cols} 少于期望 {expected_regular_cols}。X估算可能不完整。")
-        last_valid_x = col_x_estimates_regular[-1]
-        temp_avg_col_w_for_fill = avg_obu_w * 1.1 # 使用OBU宽度估算列间距
-        if len(col_x_estimates_regular) >= 2:
-            gaps_x = np.diff(sorted(list(set(col_x_estimates_regular))))
-            if gaps_x.size > 0 : temp_avg_col_w_for_fill = np.median(gaps_x)
-
-        for i_fill_c in range(num_frame_cols, expected_regular_cols):
-            col_x_estimates_regular.append(last_valid_x + (i_fill_c - num_frame_cols + 1) * temp_avg_col_w_for_fill)
-
-
-    logger.info(f"{log_prefix} 初始行Y估算 (基于聚类均值): {[int(y) for y in row_y_estimates_initial_guess if y is not None]}")
-    logger.info(f"{log_prefix} 初始列X估算 (基于聚类均值): {[int(x) for x in col_x_estimates_regular if x is not None]}")
-
-    # 计算平均物理行高 (基于聚类得到的行Y估算)
-    avg_physical_row_height = avg_obu_h * 1.2 # Fallback
-    if len(row_y_estimates_initial_guess) >= 2:
-        valid_row_y_sorted = sorted([y for y in row_y_estimates_initial_guess if y is not None])
-        if len(valid_row_y_sorted) >=2:
-            row_gaps_y = np.abs(np.diff(valid_row_y_sorted))
-            if row_gaps_y.size > 0:
-                median_row_gap = np.median(row_gaps_y)
-                if median_row_gap > avg_obu_h * 0.5:
-                    avg_physical_row_height = median_row_gap
-    logger.info(f"{log_prefix} 平均物理行高估算 (基于聚类行Y): {avg_physical_row_height:.1f}像素")
-
-    # 判断特殊行位置 (基于聚类结果)
-    special_row_at_logical_top = False
-    # 简化版：如果最顶部的聚类行 (frame_r=0) 的列数等于special_row_cols，且下一行的列数接近常规列数，则认为特殊行在顶部
-    # (这个逻辑需要更细化，当前聚类结果的行列号是临时的，还未映射到13x4的最终逻辑)
-    # 暂时先用一个简单的默认值或基于整体形状的猜测
-    # TODO: 强化特殊行判断逻辑，结合聚类出的行列数量和位置
-    logger.info(f"{log_prefix} 判断特殊行在逻辑顶部 (暂用默认): {special_row_at_logical_top}")
-
-
-    stable_params = {
-        "avg_physical_row_height": avg_physical_row_height,
-        "col_x_estimates_regular": col_x_estimates_regular, # 长度可能不足expected_regular_cols
-        "avg_obu_w": avg_obu_w,
-        "avg_obu_h": avg_obu_h,
-        "special_row_at_logical_top": special_row_at_logical_top,
-        "row_y_estimates_initial_guess": row_y_estimates_initial_guess # 长度可能不足expected_total_rows
+    stats = {
+        "median_obu_w_frame": 100.0, "median_obu_h_frame": 40.0,
+        "avg_physical_row_height_frame": 60.0, # 一个粗略的初始值
+        "row_y_means_from_clustering": {},
+        "col_x_means_from_clustering": {},
+        "is_special_row_identified": False,
+        "identified_special_row_frame_r": -1, # 单帧内的相对行号
+        "special_row_at_logical_top": False # 默认特殊行在底部
     }
-    logger.critical(f"{log_prefix} CRITICAL_LOG: 初始稳定布局参数学习成功 (基于XY聚类)。")
-    return stable_params
+
+    if not yolo_detections_with_frame_rc or len(yolo_detections_with_frame_rc) < LAYOUT_MIN_CORE_ANCHORS_FOR_STATS:
+        logger.warning(f"{log_prefix} 带frame_r/c的锚点数量不足 ({len(yolo_detections_with_frame_rc)})。返回空统计。")
+        return stats # 返回一个包含默认值的stats
+
+    # 1. 统计中位数OBU尺寸
+    all_ws = [a['w'] for a in yolo_detections_with_frame_rc if a.get('w', 0) > 0]
+    all_hs = [a['h'] for a in yolo_detections_with_frame_rc if a.get('h', 0) > 0]
+    if all_ws: stats["median_obu_w_frame"] = np.median(all_ws)
+    if all_hs: stats["median_obu_h_frame"] = np.median(all_hs)
+    logger.info(f"{log_prefix} 当前帧OBU中位数尺寸: W={stats['median_obu_w_frame']:.1f}, H={stats['median_obu_h_frame']:.1f}")
+
+    # 2. 统计各聚类行/列的平均物理坐标
+    row_cy_collections = defaultdict(list)
+    col_cx_collections = defaultdict(list)
+    for det in yolo_detections_with_frame_rc:
+        fr, fc = det.get('frame_r', -1), det.get('frame_c', -1)
+        if fr != -1: row_cy_collections[fr].append(det['cy'])
+        if fc != -1: col_cx_collections[fc].append(det['cx'])
+
+    for r, cys in row_cy_collections.items():
+        if cys: stats["row_y_means_from_clustering"][r] = np.mean(cys)
+    for c, cxs in col_cx_collections.items():
+        if cxs: stats["col_x_means_from_clustering"][c] = np.mean(cxs)
+
+    if logger.isEnabledFor(logging.DEBUG): # 使用 isEnabledFor 避免不必要的字符串格式化
+        logger.debug(f"{log_prefix}   行Y均值: { {r:int(y) for r,y in stats['row_y_means_from_clustering'].items()} }")
+        logger.debug(f"{log_prefix}   列X均值: { {c:int(x) for c,x in stats['col_x_means_from_clustering'].items()} }")
+
+    # 3. 估算平均物理行高
+    sorted_unique_row_y_means = sorted(list(set(stats["row_y_means_from_clustering"].values())))
+    if len(sorted_unique_row_y_means) >= 2:
+        row_gaps_y = np.abs(np.diff(sorted_unique_row_y_means))
+        if row_gaps_y.size > 0:
+            median_row_gap = np.median(row_gaps_y)
+            if median_row_gap > stats["median_obu_h_frame"] * 0.3:
+                stats["avg_physical_row_height_frame"] = median_row_gap
+    logger.info(f"{log_prefix} 当前帧平均物理行高估算: {stats['avg_physical_row_height_frame']:.1f}像素")
+
+    # 4. 识别特殊行 (基于聚类结果)
+    expected_special_cols = session_config.get("special_row_cols_count", LAYOUT_SPECIAL_ROW_COLS_COUNT)
+    expected_reg_cols = session_config.get("regular_cols_count", LAYOUT_REGULAR_COLS_COUNT)
+
+    rows_summary = defaultdict(lambda: {"col_indices": set(), "avg_y": 0.0, "count":0})
+    for det in yolo_detections_with_frame_rc:
+        fr, fc = det.get('frame_r', -1), det.get('frame_c', -1)
+        if fr != -1 and fc != -1:
+            rows_summary[fr]["col_indices"].add(fc)
+            rows_summary[fr]["avg_y"] += det['cy']
+            rows_summary[fr]["count"] += 1
+
+    candidate_special_rows = [] # (frame_r, num_cols_in_row, avg_y_of_row)
+    for fr, data in rows_summary.items():
+        if data["count"] > 0:
+            num_cols = len(data["col_indices"])
+            avg_y = data["avg_y"] / data["count"]
+            if num_cols == expected_special_cols:
+                # 进一步检查列是否居中 (假设常规4列，特殊2列，则特殊列的frame_c应该是1和2，如果聚类准确的话)
+                # 这个检查比较复杂，因为frame_c是0开始的相对索引
+                # 暂时简化：只要列数符合就作为候选
+                candidate_special_rows.append((fr, num_cols, avg_y))
+                logger.debug(f"{log_prefix} 候选特殊行: frame_r={fr}, 列数={num_cols}, avg_y={avg_y:.0f}")
+
+    if candidate_special_rows:
+        # 假设特殊行只可能在物理顶部或底部
+        candidate_special_rows.sort(key=lambda x: x[2]) # 按平均Y排序
+
+        # 检查最底部的候选特殊行
+        bottom_special_candidate_fr, _, _ = candidate_special_rows[-1]
+        # 检查其上一行是否像常规行 (如果存在的话)
+        is_bottom_row_plausible_special = True # 默认可信
+        if bottom_special_candidate_fr > 0 and (bottom_special_candidate_fr - 1) in rows_summary:
+            prev_row_cols = len(rows_summary[bottom_special_candidate_fr - 1]["col_indices"])
+            if not (expected_reg_cols -1 <= prev_row_cols <= expected_reg_cols +1) : # 允许一定偏差
+                 is_bottom_row_plausible_special = False
+
+        if is_bottom_row_plausible_special:
+            stats["is_special_row_identified"] = True
+            stats["identified_special_row_frame_r"] = bottom_special_candidate_fr
+            stats["special_row_at_logical_top"] = False # 因为我们选的是底部的
+            logger.info(f"{log_prefix} 识别到底部特殊行: frame_r={bottom_special_candidate_fr}")
+
+        # （可选）如果底部没找到，再检查顶部 (如果允许特殊行在顶部)
+        # if not stats["is_special_row_identified"]:
+        #     top_special_candidate_fr, _, _ = candidate_special_rows[0]
+        #     # ... 类似逻辑检查其下一行 ...
+
+    if not stats["is_special_row_identified"]:
+        logger.warning(f"{log_prefix} 未能明确识别出特殊行。")
+
+    logger.info(f"{log_prefix} 帧布局统计与特殊行识别完成。")
+    return stats
 
 
 class LayoutStateManager:
@@ -240,281 +227,270 @@ class LayoutStateManager:
         self.regular_cols_count = self.config_params.get("LAYOUT_REGULAR_COLS_COUNT", 4)
         self.special_row_cols_count = self.config_params.get("LAYOUT_SPECIAL_ROW_COLS_COUNT", 2)
 
-    def learn_initial_stable_layout(self,
-                                    yolo_detections_for_calib: List[Dict[str, Any]],
-                                    image_wh: Tuple[int, int],
-                                    session_config_from_session: Dict[str, Any],
-                                    session_id: str) -> Optional[Dict[str, Any]]:
-        """
-        学习初始稳定布局参数。
-        首先通过XY独立聚类为YOLO检测框附加单帧逻辑行列号 (frame_r, frame_c)。
-        然后基于这些带单帧逻辑坐标的检测框，统计生成稳定的布局参数。
-        """
-        log_prefix = f"会话 {session_id} (learn_initial_stable_layout_entry):"
-        self.logger.info(f"{log_prefix} 开始学习初始稳定布局参数...")
+    def analyze_frame_layout_and_get_params(self,
+                                           yolo_detections: List[Dict[str, Any]],
+                                           image_wh: Tuple[int, int],
+                                           session_config_from_session: Dict[str, Any],
+                                           session_id: str
+                                           ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        log_prefix = f"会话 {session_id} (analyze_frame_layout_entry V3.1):" # 版本更新
+        self.logger.info(f"{log_prefix} 开始分析帧布局并获取参数...")
 
-        if not yolo_detections_for_calib:
-            self.logger.warning(f"{log_prefix} 无YOLO检测结果用于学习初始布局。")
-            return None
+        if not yolo_detections:
+            self.logger.warning(f"{log_prefix} 无YOLO检测结果，无法分析布局。")
+            return None, []
 
-        # 先统计一次全局的平均OBU尺寸，用于后续聚类阈值计算
-        all_ws = [d['w'] for d in yolo_detections_for_calib if d.get('w', 0) > 0]
-        all_hs = [d['h'] for d in yolo_detections_for_calib if d.get('h', 0) > 0]
-        avg_w_for_clustering = np.median(all_ws) if all_ws else 100.0
-        avg_h_for_clustering = np.median(all_hs) if all_hs else 40.0
+        y_pixel_thresh = self.config_params.get("LAYOUT_Y_AXIS_GROUPING_PIXEL_THRESHOLD", 50.0) # 从config获取
+        x_pixel_thresh = self.config_params.get("LAYOUT_X_AXIS_GROUPING_PIXEL_THRESHOLD", 400.0) # 从config获取
 
-        if avg_w_for_clustering <=5 or avg_h_for_clustering <=5:
-             self.logger.warning(f"{log_prefix} 统计的初始平均OBU尺寸过小 (W:{avg_w_for_clustering}, H:{avg_h_for_clustering})，可能影响聚类。")
-             # 可以选择返回None或使用更硬编码的fallback
-
-        # 步骤1: XY独立聚类，为每个检测框附加 frame_r, frame_c
         detections_with_frame_rc = _analyze_layout_by_xy_clustering(
-            yolo_detections_for_calib,
-            avg_w_for_clustering,
-            avg_h_for_clustering,
-            { # 从self.config_params获取阈值因子
-                "row_y_factor": self.config_params.get("LAYOUT_ROW_GROUP_Y_THRESHOLD_FACTOR", 0.4),
-                "col_x_factor": self.config_params.get("LAYOUT_COL_GROUP_X_THRESHOLD_FACTOR", 0.6)
-            },
+            yolo_detections,
+            y_pixel_thresh,
+            x_pixel_thresh,
             self.logger,
             session_id
         )
-
         if not detections_with_frame_rc:
             self.logger.error(f"{log_prefix} XY独立聚类未能为任何锚点分配单帧逻辑坐标。")
-            return None
+            # 返回原始detections，让后续步骤知道聚类失败（通过检查有无frame_r/c）
+            return None, yolo_detections
 
-        # 步骤2: 基于带frame_r/c的检测框，学习（统计）稳定的布局参数
-        stable_params = _learn_initial_stable_layout_params(
-            detections_with_frame_rc, # 传递已处理过的列表
-            image_wh,
+        current_frame_layout_stats = _create_frame_layout_stats_and_identify_special_row(
+            detections_with_frame_rc,
             session_config_from_session,
             self.logger,
             session_id
         )
-        return stable_params
 
-    # ... (determine_y_axis_anchor, _map_single_anchor_to_logical_using_params,
-    #      draw_stable_layout_on_image, update_session_state_with_reference_logic 方法保持不变，
-    #      但请确保它们内部对 self.config_params 的访问是正确的，例如获取阈值因子等)
+        return current_frame_layout_stats, detections_with_frame_rc
+
     def determine_y_axis_anchor(self,
-                                current_frame_verified_obus: List[Dict[str, Any]],
+                                current_frame_verified_obus_with_rc: List[Dict[str, Any]],
                                 obu_evidence_pool: Dict[str, Any],
-                                stable_layout_params: Dict[str, Any],
+                                current_frame_layout_stats: Optional[Dict[str, Any]],
                                 session_id: str,
-                                current_frame_num: int
-                                ) -> Tuple[Optional[Dict[str, Any]], List[float], bool]:
-        # ... (此方法逻辑与上一版相同) ...
-        log_prefix = f"会话 {session_id} (determine_y_axis_anchor F{current_frame_num}):"
-        is_frame_skipped = False
-        y_anchor_info = None
-        current_dynamic_row_y_estimates = list(stable_layout_params.get("row_y_estimates_initial_guess", []))
-        if not current_dynamic_row_y_estimates:
-            self.logger.warning(f"{log_prefix} stable_layout_params中无row_y_estimates_initial_guess，生成临时Y估算。")
-            img_h_temp = self.config_params.get("IMAGE_FALLBACK_HEIGHT_FOR_LAYOUT", 5000)
-            current_dynamic_row_y_estimates = [(r + 0.5) * (img_h_temp / self.expected_total_rows) for r in range(self.expected_total_rows)]
+                                current_frame_num: int,
+                                session_config: Dict[str, Any] # 需要session_config获取expected_total_rows
+                                ) -> Tuple[Optional[Dict[str, Any]], List[float]]:
+        log_prefix = f"会话 {session_id} (determine_y_axis_anchor F{current_frame_num} V3.2):"
+
+        # y_anchor_info 包含: delta_r, is_anchored, is_first_frame_anchor_failed
+        y_anchor_info = {"delta_r": 0, "is_anchored": False, "is_first_frame_anchor_failed": False}
+
+        # 准备用于绘图的 estimated_row_y_for_drawing
+        expected_total_rows_for_drawing = session_config.get("expected_total_rows", LAYOUT_EXPECTED_TOTAL_ROWS)
+        estimated_row_y_for_drawing = [0.0] * expected_total_rows_for_drawing
+        avg_row_h_for_drawing = 100.0 # Default
+        base_y_for_drawing = 100.0 # Default
+
+        if current_frame_layout_stats:
+            avg_row_h_for_drawing = current_frame_layout_stats.get("avg_physical_row_height_frame", avg_row_h_for_drawing)
+            row_y_means = current_frame_layout_stats.get("row_y_means_from_clustering", {})
+            if 0 in row_y_means: # 如果聚类结果中有frame_r=0的行
+                base_y_for_drawing = row_y_means[0]
+            elif row_y_means: # 否则取第一个可用行的Y
+                base_y_for_drawing = next(iter(sorted(row_y_means.items())))[1]
+
+        for i in range(expected_total_rows_for_drawing):
+            estimated_row_y_for_drawing[i] = base_y_for_drawing + i * avg_row_h_for_drawing
+
+
+        # --- 第一帧特殊处理：基于特殊行强制锚定 ---
+        if current_frame_num == 1:
+            self.logger.info(f"{log_prefix} 首帧处理，尝试基于特殊行锚定。")
+            if current_frame_layout_stats and current_frame_layout_stats.get("is_special_row_identified"):
+                special_row_fr = current_frame_layout_stats["identified_special_row_frame_r"]
+                is_special_top = current_frame_layout_stats["special_row_at_logical_top"] # 这个判断目前还比较简单
+
+                if not is_special_top: # 假设我们强制要求特殊行在底部
+                    expected_global_special_r = session_config.get("expected_total_rows", LAYOUT_EXPECTED_TOTAL_ROWS) - 1
+                    delta_r = expected_global_special_r - special_row_fr
+                    y_anchor_info.update({
+                        "delta_r": delta_r,
+                        "is_anchored": True,
+                        "anchor_type": "first_frame_special_row_bottom"
+                    })
+                    self.logger.info(f"{log_prefix} 首帧：通过识别到的底部特殊行 (frame_r={special_row_fr}) "
+                                     f"锚定成功。计算得到 delta_r = {delta_r}。")
+                else: # 如果识别到的特殊行在顶部 (或我们不强制底部)
+                    # 这种情况下，delta_r 可以是 0 - special_row_fr
+                    # 但为了简化，如果不在底部，我们先认为锚定“部分成功”或需要后续调整
+                    # 或者，如果允许特殊行在顶部，那么 delta_r = 0 - special_row_fr
+                    # y_anchor_info["delta_r"] = 0 - special_row_fr # 假设它对应全局行0
+                    # y_anchor_info["is_anchored"] = True
+                    # y_anchor_info["anchor_type"] = "first_frame_special_row_top"
+                    # self.logger.info(f"{log_prefix} 首帧：识别到顶部特殊行 (frame_r={special_row_fr})，delta_r={y_anchor_info['delta_r']}.")
+                    # 当前简化：如果不在底部，则认为第一帧锚定失败，依赖后续帧
+                    y_anchor_info["is_first_frame_anchor_failed"] = True
+                    self.logger.warning(f"{log_prefix} 首帧：识别到特殊行，但其位置不符合底部锚定要求（或逻辑未完全实现）。标记为锚定失败。")
+
+            else: # 第一帧未能识别出特殊行
+                y_anchor_info["is_first_frame_anchor_failed"] = True
+                self.logger.error(f"{log_prefix} 首帧：未能识别到特殊行！根据行政规定，此为错误。delta_r保持0。")
+
+            # 更新用于绘图的 estimated_row_y_for_drawing (基于第一帧的delta_r)
+            if y_anchor_info["is_anchored"]:
+                # 假设 frame_r=0 对应的物理Y可以通过 base_y_for_drawing (即聚类出的frame_r=0的平均Y)
+                # 和计算出的 delta_r 来反推全局行0的Y
+                # global_r = frame_r + delta_r  => frame_r = global_r - delta_r
+                # 当 global_r = 0 时, frame_r_for_global_0 = -delta_r
+                # y_for_global_0 = base_y_for_drawing_of_frame_r0 - (-delta_r) * avg_row_h_for_drawing (如果delta_r是负的)
+                # 或者更直接：锚定点的物理Y是已知的，用它和delta_r反推
+                if "identified_special_row_frame_r" in current_frame_layout_stats and \
+                   current_frame_layout_stats["identified_special_row_frame_r"] in current_frame_layout_stats.get("row_y_means_from_clustering",{}):
+
+                    phys_y_of_special_fr = current_frame_layout_stats["row_y_means_from_clustering"][current_frame_layout_stats["identified_special_row_frame_r"]]
+                    # global_special_r = identified_special_fr + delta_r
+                    # phys_y_of_global_0 = phys_y_of_special_fr - global_special_r * avg_row_h_for_drawing
+                    # 简化：我们已经有了delta_r，直接用它调整所有行的绘制
+                    for i_global_logical in range(expected_total_rows_for_drawing):
+                        frame_r_equiv = i_global_logical - y_anchor_info["delta_r"]
+                        # 找到这个frame_r_equiv对应的物理Y均值（如果存在）
+                        phys_y_for_frame_r_equiv = current_frame_layout_stats.get("row_y_means_from_clustering",{}).get(frame_r_equiv)
+                        if phys_y_for_frame_r_equiv is not None:
+                             estimated_row_y_for_drawing[i_global_logical] = phys_y_for_frame_r_equiv
+                        elif i_global_logical > 0 and estimated_row_y_for_drawing[i_global_logical-1] is not None: # 外推
+                             estimated_row_y_for_drawing[i_global_logical] = estimated_row_y_for_drawing[i_global_logical-1] + avg_row_h_for_drawing
+                        else: # Fallback
+                             estimated_row_y_for_drawing[i_global_logical] = base_y_for_drawing + frame_r_equiv * avg_row_h_for_drawing
+
+
+            return y_anchor_info, estimated_row_y_for_drawing
+
+        # --- 后续帧的Y轴锚定逻辑 (与之前类似) ---
         historical_overlaps_in_current_frame = []
-        for obu_cur in current_frame_verified_obus:
+        # (这里的 current_frame_verified_obus_with_rc 已经包含了 frame_r)
+        for obu_cur in current_frame_verified_obus_with_rc:
             if obu_cur["text"] in obu_evidence_pool:
                 hist_entry = obu_evidence_pool[obu_cur["text"]]
-                if hist_entry.get("logical_coord") is not None: # 确保历史条目有已确定的逻辑坐标
+                if hist_entry.get("logical_coord") is not None and obu_cur.get("frame_r", -1) != -1:
                     historical_overlaps_in_current_frame.append({
                         "text": obu_cur["text"],
                         "current_physical_anchor": obu_cur["physical_anchor"],
                         "historical_logical_coord": hist_entry["logical_coord"],
-                        # 新增：记录当前帧通过XY聚类得到的单帧逻辑行号，用于后续delta_r计算
-                        "current_frame_r": obu_cur.get("frame_r", -1)
+                        "current_frame_r": obu_cur["frame_r"]
                     })
+
         self.logger.info(f"{log_prefix} 在当前帧找到 {len(historical_overlaps_in_current_frame)} 个有效的历史重叠OBU用于Y轴锚定。")
-        if current_frame_num > 1 and not historical_overlaps_in_current_frame:
-            self.logger.error(f"{log_prefix} 检测到漏帧！当前帧与历史无有效重叠OBU。")
-            is_frame_skipped = True
-            return None, current_dynamic_row_y_estimates, is_frame_skipped
-        min_y_historical_obu_for_anchor = None
-        if historical_overlaps_in_current_frame:
-            # 筛选出那些在当前帧也被成功赋予了 frame_r 的历史OBU
-            valid_anchor_candidates = [o for o in historical_overlaps_in_current_frame if o.get("current_frame_r", -1) != -1]
-            if valid_anchor_candidates:
-                min_y_historical_obu_for_anchor = min(
-                    valid_anchor_candidates,
-                    key=lambda o: o["current_physical_anchor"]["cy"]
-                )
-        if min_y_historical_obu_for_anchor:
-            y_ref_current = min_y_historical_obu_for_anchor["current_physical_anchor"]["cy"]
-            l_ref_global = min_y_historical_obu_for_anchor["historical_logical_coord"][0]
-            frame_r_anchor = min_y_historical_obu_for_anchor["current_frame_r"]
 
-            # 计算 delta_r (全局逻辑行号与当前帧聚类得到的行号的偏移)
-            delta_r = l_ref_global - frame_r_anchor
-            self.logger.info(f"{log_prefix} Y轴锚定参照: OBU='{min_y_historical_obu_for_anchor['text']}', "
-                             f"历史全局行L={l_ref_global}, 当前帧聚类行R={frame_r_anchor}, delta_r={delta_r}")
+        if not historical_overlaps_in_current_frame:
+            self.logger.error(f"{log_prefix} 检测到漏帧！当前帧与历史无有效重叠OBU。delta_r将为0。")
+            y_anchor_info["is_skipped_due_to_no_overlap"] = True
+            return y_anchor_info, estimated_row_y_for_drawing
 
-            avg_row_h = stable_layout_params.get("avg_physical_row_height")
-            if avg_row_h is None or avg_row_h <= 1:
-                self.logger.warning(f"{log_prefix} 稳定参数中的平均行高无效 ({avg_row_h})，无法精确Y轴锚定。")
-            else:
-                # 更新动态行Y估算：基于Y轴锚定点的物理Y，和稳定的平均行高，以及计算出的delta_r
-                # (或者说，我们不再强依赖一个完整的 current_dynamic_row_y_estimates 列表，
-                #  而是直接在需要时用 delta_r 和 frame_r 来计算全局逻辑行)
-                # 但为了绘图和某些回退逻辑，还是生成一个
-                # 假设 frame_r=0 对应的物理Y可以通过 y_ref_current - frame_r_anchor * avg_row_h 估算
-                estimated_y_for_frame_r0 = y_ref_current - frame_r_anchor * avg_row_h
-                current_dynamic_row_y_estimates = [
-                     estimated_y_for_frame_r0 + (i_global - delta_r) * avg_row_h for i_global in range(self.expected_total_rows)
-                ]
-                y_anchor_info = {
-                    "ref_obu_text": min_y_historical_obu_for_anchor['text'],
-                    "ref_global_logical_row": l_ref_global,
-                    "ref_frame_logical_row": frame_r_anchor,
-                    "ref_physical_y_current": y_ref_current,
-                    "delta_r": delta_r # 保存这个重要的偏移量
-                }
-                self.logger.info(f"{log_prefix} Y轴锚定成功。Delta_r: {delta_r}")
-                self.logger.info(f"  更新后（理论上的）动态行Y估算: {[int(y) for y in current_dynamic_row_y_estimates]}")
-        elif current_frame_num > 1:
-            self.logger.warning(f"{log_prefix} 后续帧未能找到Y轴锚定参照物。将使用基于稳定参数的初始Y估算，delta_r=0。")
-            y_anchor_info = {"delta_r": 0} # 假设无偏移
-        else: # 第一帧
-            y_anchor_info = {"delta_r": 0} # 第一帧无偏移
+        min_y_historical_obu_for_anchor = min(
+            historical_overlaps_in_current_frame,
+            key=lambda o: o["current_physical_anchor"]["cy"]
+        )
 
-        return y_anchor_info, current_dynamic_row_y_estimates, is_frame_skipped
+        y_ref_current_phys = min_y_historical_obu_for_anchor["current_physical_anchor"]["cy"]
+        l_ref_global_hist = min_y_historical_obu_for_anchor["historical_logical_coord"][0]
+        frame_r_anchor_curr = min_y_historical_obu_for_anchor["current_frame_r"]
 
-    def _map_single_anchor_to_logical_using_params(
-        self, anchor_to_map: Dict[str, Any],
-        row_y_estimates_map: List[float],
-        col_x_estimates_regular_map: List[float],
-        stable_layout_params_map: Dict[str, Any],
-        logger_map: Any,
-        session_id_for_log_map: str,
-        log_prefix_map: str = "(_map_single_anchor)"
-    ) -> Optional[Tuple[int, int]]:
-        # ... (此方法逻辑与上一版相同) ...
-        if not row_y_estimates_map or not col_x_estimates_regular_map or \
-           any(x is None for x in col_x_estimates_regular_map):
-            return None
-        avg_row_h = stable_layout_params_map.get("avg_physical_row_height", 50)
-        avg_obu_w = stable_layout_params_map.get("avg_obu_w", 100)
-        y_match_threshold = avg_row_h * self.config_params.get("LAYOUT_Y_MATCH_THRESHOLD_FACTOR", 0.85)
-        x_match_threshold = avg_obu_w * self.config_params.get("LAYOUT_X_MATCH_THRESHOLD_FACTOR", 0.85)
-        special_on_top = stable_layout_params_map.get("special_row_at_logical_top", False)
-        cand_r = -1; min_y_d_sq = float('inf')
-        for r_idx, est_y in enumerate(row_y_estimates_map):
-            dist_y_sq = (anchor_to_map['cy'] - est_y)**2
-            if dist_y_sq < min_y_d_sq and dist_y_sq < y_match_threshold**2:
-                min_y_d_sq = dist_y_sq; cand_r = r_idx
-        if cand_r == -1: return None
-        is_special_row = (cand_r == (self.expected_total_rows - 1) and not special_on_top) or \
-                         (cand_r == 0 and special_on_top)
-        cols_to_match_xs = []
-        if is_special_row and self.special_row_cols_count == 2 and self.regular_cols_count == 4:
-            if len(col_x_estimates_regular_map) == 4:
-                cols_to_match_xs = [col_x_estimates_regular_map[1], col_x_estimates_regular_map[2]]
-        else:
-            cols_to_match_xs = col_x_estimates_regular_map
-        if not cols_to_match_xs or not all(isinstance(x, (int, float)) for x in cols_to_match_xs):
-            return None
-        cand_c_in_options = -1; min_x_d_sq = float('inf')
-        for c_opt_idx, est_x in enumerate(cols_to_match_xs):
-            dist_x_sq = (anchor_to_map['cx'] - est_x)**2
-            if dist_x_sq < min_x_d_sq and dist_x_sq < x_match_threshold**2:
-                min_x_d_sq = dist_x_sq; cand_c_in_options = c_opt_idx
-        if cand_c_in_options != -1:
-            final_c = cand_c_in_options
-            if is_special_row and self.special_row_cols_count == 2 and self.regular_cols_count == 4:
-                final_c = cand_c_in_options + 1
-            if 0 <= final_c < self.regular_cols_count:
-                return (cand_r, final_c)
-        return None
+        delta_r = l_ref_global_hist - frame_r_anchor_curr
+        y_anchor_info.update({
+            "ref_obu_text": min_y_historical_obu_for_anchor['text'],
+            "ref_global_logical_row": l_ref_global_hist,
+            "ref_frame_logical_row": frame_r_anchor_curr,
+            "ref_physical_y_current": y_ref_current_phys,
+            "delta_r": delta_r,
+            "is_anchored": True,
+            "anchor_type": "historical_obu"
+        })
+        self.logger.info(f"{log_prefix} Y轴锚定成功。参照OBU='{y_anchor_info['ref_obu_text']}', "
+                         f"历史全局行L={l_ref_global_hist}, 当前帧聚类行R={frame_r_anchor_curr}, delta_r={delta_r}")
+
+        # 更新用于绘图的 estimated_row_y_for_drawing
+        estimated_y_for_frame_r0 = y_ref_current_phys - frame_r_anchor_curr * avg_row_h_for_drawing
+        for i_global_logical in range(expected_total_rows_for_drawing):
+            frame_r_equiv = i_global_logical - delta_r
+            estimated_row_y_for_drawing[i_global_logical] = estimated_y_for_frame_r0 + frame_r_equiv * avg_row_h_for_drawing
+
+        self.logger.info(f"  更新后（理论上的）动态行Y估算(用于绘图): {[int(y) for y in estimated_row_y_for_drawing]}")
+
+        return y_anchor_info, estimated_row_y_for_drawing
 
     def draw_stable_layout_on_image(self,
-                                     stable_layout_params: Dict[str, Any],
+                                     yolo_detections_with_frame_rc: List[Dict[str, Any]],
                                      image_wh: Tuple[int, int],
                                      session_id: str,
-                                     frame_num: int):
-        # ... (此方法逻辑与上一版相同) ...
-        log_prefix = f"会话 {session_id} (draw_stable_layout F{frame_num}):"
-        self.logger.critical(f"{log_prefix} CRITICAL_LOG: 进入绘制稳定布局图函数。")
+                                     frame_num: int,
+                                     y_anchor_info: Optional[Dict[str,Any]],
+                                     current_frame_layout_stats: Optional[Dict[str, Any]]
+                                     ):
+        # ... (此方法逻辑与上一版基本相同，确保使用正确的参数) ...
+        log_prefix = f"会话 {session_id} (draw_layout_from_cluster F{frame_num} V3.2):"
+        self.logger.critical(f"{log_prefix} CRITICAL_LOG: 进入绘制【单帧逻辑投射图】函数。")
         img_w, img_h = image_wh
         canvas = np.zeros((img_h, img_w, 3), dtype=np.uint8)
         self.logger.info(f"{log_prefix} 画布尺寸: W={img_w}, H={img_h}")
-        row_y_estimates = stable_layout_params.get("row_y_estimates_initial_guess", [])
-        col_x_estimates_reg = stable_layout_params.get("col_x_estimates_regular", [])
-        avg_w = stable_layout_params.get("avg_obu_w", 100)
-        avg_h = stable_layout_params.get("avg_obu_h", 40)
-        special_on_top = stable_layout_params.get("special_row_at_logical_top", False)
-        if not row_y_estimates or not col_x_estimates_reg or \
-           not all(isinstance(x, (int,float)) for x_idx, x in enumerate(col_x_estimates_reg) if x is not None and x_idx < self.regular_cols_count ):
-            self.logger.critical(f"{log_prefix} CRITICAL_LOG: 稳定布局参数不完整或类型错误，无法绘制坑位图。Rows: {len(row_y_estimates)}, Cols: {col_x_estimates_reg}")
+        if not yolo_detections_with_frame_rc:
+            self.logger.warning(f"{log_prefix} 无带frame_r/c的YOLO检测结果，无法绘制投射图。")
             return
-        font_scale = 0.5; font_thickness = 1
-        for r_log in range(self.expected_total_rows):
-            for c_log_visual in range(self.regular_cols_count):
-                is_special_row_current = (r_log == 0 and special_on_top) or \
-                                         (r_log == self.expected_total_rows - 1 and not special_on_top)
-                actual_c_log_for_data = c_log_visual
-                is_placeholder_slot = False
-                if is_special_row_current and self.special_row_cols_count == 2 and self.regular_cols_count == 4:
-                    if c_log_visual == 0 or c_log_visual == 3:
-                        is_placeholder_slot = True
-                    else:
-                        actual_c_log_for_data = c_log_visual -1
-                slot_color = (50, 50, 50); text_color = (100, 100, 100); text_to_draw = "N/A"
-                if not is_placeholder_slot:
-                    if not (0 <= actual_c_log_for_data < len(col_x_estimates_reg) and \
-                            col_x_estimates_reg[actual_c_log_for_data] is not None):
-                        continue
-                    slot_color = (0, 150, 0) if not is_special_row_current else (0, 100, 150)
-                    text_color = (255, 255, 255); text_to_draw = f"({r_log},{c_log_visual})"
-                try:
-                    center_y = int(row_y_estimates[r_log])
-                    if is_special_row_current and self.special_row_cols_count == 2 and self.regular_cols_count == 4:
-                        if c_log_visual == 0: center_x = int(col_x_estimates_reg[0])
-                        elif c_log_visual == 1: center_x = int(col_x_estimates_reg[1])
-                        elif c_log_visual == 2: center_x = int(col_x_estimates_reg[2])
-                        elif c_log_visual == 3: center_x = int(col_x_estimates_reg[3])
-                        else: continue
-                    else:
-                        if 0 <= c_log_visual < len(col_x_estimates_reg) and col_x_estimates_reg[c_log_visual] is not None:
-                            center_x = int(col_x_estimates_reg[c_log_visual])
-                        else: continue
-                except (IndexError, TypeError) as e_coord:
-                    self.logger.error(f"{log_prefix} 绘制坑位图时获取坐标错误: r={r_log}, c_visual={c_log_visual}, Error: {e_coord}")
-                    continue
-                half_w, half_h = int(avg_w / 2), int(avg_h / 2)
-                pt1 = (max(0, center_x - half_w), max(0, center_y - half_h))
-                pt2 = (min(img_w -1, center_x + half_w), min(img_h -1, center_y + half_h))
-                if pt1[0] >= pt2[0] or pt1[1] >= pt2[1]: continue
-                cv2.rectangle(canvas, pt1, pt2, slot_color, -1 if not is_placeholder_slot else 1)
-                if not is_placeholder_slot: cv2.rectangle(canvas, pt1, pt2, (200,200,200), 1)
-                (tw, th), _ = cv2.getTextSize(text_to_draw, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
-                cv2.putText(canvas, text_to_draw, (center_x - tw // 2, center_y + th // 2),
-                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, font_thickness, cv2.LINE_AA)
+        avg_w_draw = 100.0; avg_h_draw = 40.0
+        if current_frame_layout_stats:
+            avg_w_draw = current_frame_layout_stats.get("median_obu_w_frame", avg_w_draw)
+            avg_h_draw = current_frame_layout_stats.get("median_obu_h_frame", avg_h_draw)
+        delta_r_draw = y_anchor_info.get("delta_r", 0) if y_anchor_info else 0
+        font_scale = 0.6; font_thickness = 1 # 稍微调大字体
+        logical_to_physical_centers = defaultdict(lambda: {"cx_sum": 0, "cy_sum": 0, "count": 0, "texts": []})
+        for det in yolo_detections_with_frame_rc:
+            fr, fc = det.get('frame_r', -1), det.get('frame_c', -1)
+            if fr != -1 and fc != -1:
+                key = (fr + delta_r_draw, fc) # 使用全局逻辑坐标作为key
+                logical_to_physical_centers[key]["cx_sum"] += det['cx']
+                logical_to_physical_centers[key]["cy_sum"] += det['cy']
+                logical_to_physical_centers[key]["count"] += 1
+                # 可以在这里尝试获取OCR文本用于标注，但需要传递OCR结果
+                # text_for_draw = det.get("ocr_text_if_available", "") # 假设有这个字段
+                # if text_for_draw: logical_to_physical_centers[key]["texts"].append(text_for_draw)
+
+        for (global_r_draw, global_c_draw), data in logical_to_physical_centers.items():
+            if data["count"] == 0: continue
+            center_x = int(data["cx_sum"] / data["count"])
+            center_y = int(data["cy_sum"] / data["count"])
+            is_drawn_as_special = False # TODO: 更准确的特殊行判断 for drawing
+            _expected_total_rows = self.config_params.get("LAYOUT_EXPECTED_TOTAL_ROWS", 13)
+            if global_r_draw == (_expected_total_rows - 1) and \
+               (global_c_draw == 1 or global_c_draw == 2) and \
+               self.config_params.get("LAYOUT_REGULAR_COLS_COUNT", 4) == 4 and \
+               self.config_params.get("LAYOUT_SPECIAL_ROW_COLS_COUNT", 2) == 2:
+                is_drawn_as_special = True
+            slot_color = (0, 100, 150) if is_drawn_as_special else (0, 150, 0)
+            text_color = (255, 255, 255)
+            text_to_draw = f"({global_r_draw},{global_c_draw})"
+            # if data["texts"]: text_to_draw += f"\n{data['texts'][0]}" # 最多显示一个识别文本
+            half_w, half_h = int(avg_w_draw / 2), int(avg_h_draw / 2)
+            pt1 = (max(0, center_x - half_w), max(0, center_y - half_h))
+            pt2 = (min(img_w -1, center_x + half_w), min(img_h -1, center_y + half_h))
+            if pt1[0] >= pt2[0] or pt1[1] >= pt2[1]: continue
+            cv2.rectangle(canvas, pt1, pt2, slot_color, -1)
+            cv2.rectangle(canvas, pt1, pt2, (200,200,200), 1)
+            (tw, th), _ = cv2.getTextSize(text_to_draw, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+            cv2.putText(canvas, text_to_draw, (center_x - tw // 2, center_y + th // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, font_thickness, cv2.LINE_AA)
         output_dir = os.path.join(self.config_params.get("PROCESS_PHOTO_DIR", "process_photo"))
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-        map_filename = f"stable_layout_map_s{session_id[:8]}_f{frame_num}.png"
+        if not os.path.exists(output_dir): os.makedirs(output_dir, exist_ok=True)
+        map_filename = f"frame_layout_projection_s{session_id[:8]}_f{frame_num}.png"
         output_path = os.path.join(output_dir, map_filename)
         try:
             save_success = cv2.imwrite(output_path, canvas)
-            if save_success:
-                self.logger.critical(f"{log_prefix} CRITICAL_LOG: 稳定布局可用坑位图已成功保存到: {output_path}")
-            else:
-                self.logger.critical(f"{log_prefix} CRITICAL_LOG: cv2.imwrite未能保存稳定布局图到 {output_path} (返回False)")
-        except Exception as e_save:
-            self.logger.critical(f"{log_prefix} CRITICAL_LOG: 保存稳定布局坑位图失败 {output_path}: {e_save}", exc_info=True)
+            if save_success: self.logger.critical(f"{log_prefix} CRITICAL_LOG: 【单帧逻辑投射图】已成功保存到: {output_path}")
+            else: self.logger.critical(f"{log_prefix} CRITICAL_LOG: cv2.imwrite未能保存单帧逻辑投射图到 {output_path} (返回False)")
+        except Exception as e_save: self.logger.critical(f"{log_prefix} CRITICAL_LOG: 保存单帧逻辑投射图失败 {output_path}: {e_save}", exc_info=True)
 
     def update_session_state_with_reference_logic(
         self,
         session_data: Dict[str, Any],
-        current_frame_yolo_detections_with_frame_rc: List[Dict[str, Any]], # 已包含 frame_r, frame_c
+        current_frame_yolo_detections_with_rc: List[Dict[str, Any]], # 已包含 frame_r, frame_c
         current_frame_ocr_results: List[Dict[str, Any]],
         y_anchor_info: Optional[Dict[str, Any]], # 包含 delta_r
-        # current_dynamic_row_y_estimates: List[float], # 这个可能不再直接使用，因为有delta_r
-        stable_layout_params: Dict[str, Any],
+        # stable_layout_params_from_session: Dict[str, Any], # 改为从 session_data 获取
         session_id: str,
-        current_frame_num: int
+        current_frame_num: int,
+        session_config: Dict[str, Any]
     ) -> Tuple[List[List[int]], Dict[Tuple[int, int], str], List[Dict[str, Any]]]:
-        log_prefix = f"会话 {session_id} (update_state_ref_logic V2.0 F{current_frame_num}):"
+        log_prefix = f"会话 {session_id} (update_state_ref_logic V3.3 F{current_frame_num}):" # 版本更新
         self.logger.info(f"{log_prefix} 开始核心状态更新 (基于XY聚类和Y轴锚定)...")
 
         obu_evidence_pool = session_data["obu_evidence_pool"]
@@ -522,109 +498,137 @@ class LayoutStateManager:
         recognized_texts_map = session_data["recognized_texts_map"]
         warnings = []
 
-        # 获取 delta_r，如果Y轴锚定失败或首帧，则为0
-        delta_r = 0
-        if y_anchor_info and "delta_r" in y_anchor_info:
-            delta_r = y_anchor_info["delta_r"]
+        # 从会话或类属性获取布局基本定义
+        _expected_total_rows = session_config.get("expected_total_rows", self.expected_total_rows)
+        _regular_cols = session_config.get("regular_cols_count", self.regular_cols_count)
+        _special_cols = session_config.get("special_row_cols_count", self.special_row_cols_count)
+
+
+        delta_r = y_anchor_info.get("delta_r", 0) if y_anchor_info else 0
         self.logger.info(f"{log_prefix} 使用的行偏移 delta_r: {delta_r}")
 
-        # 1. 更新 obu_evidence_pool，并为当前帧OBU计算初步的全局逻辑坐标
-        #    (历史OBU的logical_coord保持不变)
         map_ocr_results_by_yolo_idx = {ocr.get("original_index"): ocr for ocr in current_frame_ocr_results if ocr}
 
-        for det_with_rc in current_frame_yolo_detections_with_frame_rc:
+        # 1. 更新 obu_evidence_pool，并为当前帧OBU计算初步的全局逻辑坐标
+        for det_with_rc in current_frame_yolo_detections_with_rc:
             original_yolo_idx = det_with_rc["original_index"]
             ocr_item = map_ocr_results_by_yolo_idx.get(original_yolo_idx)
             if not ocr_item: continue
-
             ocr_text = ocr_item.get("ocr_final_text", "")
             if ocr_text in VALID_OBU_CODES:
                 frame_r, frame_c = det_with_rc.get('frame_r', -1), det_with_rc.get('frame_c', -1)
-                if frame_r == -1 or frame_c == -1: # 聚类失败的跳过
-                    self.logger.warning(f"{log_prefix} OBU '{ocr_text}' (YOLO idx {original_yolo_idx}) 因单帧聚类失败，无法处理。")
+                if frame_r == -1 or frame_c == -1:
+                    self.logger.warning(f"{log_prefix} OBU '{ocr_text}' (YOLO原始索引 {original_yolo_idx}) 因单帧聚类失败，无法处理。")
                     continue
-
-                # 计算当前帧推断的全局逻辑坐标
                 current_global_r = frame_r + delta_r
-                current_global_c = frame_c # X轴暂时不加偏移
-
-                phys_anchor = ocr_item.get("yolo_anchor_details") # 从OCR结果中获取匹配的YOLO锚点细节
+                current_global_c = frame_c
+                phys_anchor = ocr_item.get("yolo_anchor_details")
+                if not phys_anchor:
+                    self.logger.warning(f"{log_prefix} OBU '{ocr_text}' 缺少yolo_anchor_details，无法更新证据池。")
+                    continue
                 ocr_conf = ocr_item.get("ocr_confidence", 0.0)
-
-                if text in obu_evidence_pool: # 历史OBU
-                    obu_evidence_pool[text]["physical_anchors"] = [phys_anchor]
-                    obu_evidence_pool[text]["ocr_confidence"] = max(obu_evidence_pool[text].get("ocr_confidence",0.0), ocr_conf)
-                    obu_evidence_pool[text]["last_seen_frame"] = current_frame_num
-                    # logical_coord 保持不变，不被当前帧的推断覆盖 (100%信任历史)
-                    self.logger.debug(f"{log_prefix} 历史OBU '{text}' 更新物理信息。保持历史逻辑坐标: {obu_evidence_pool[text]['logical_coord']}")
-                else: # 新OBU
-                    obu_evidence_pool[text] = {
+                if ocr_text in obu_evidence_pool:
+                    obu_evidence_pool[ocr_text]["physical_anchors"] = [phys_anchor]
+                    obu_evidence_pool[ocr_text]["ocr_confidence"] = max(obu_evidence_pool[ocr_text].get("ocr_confidence",0.0), ocr_conf)
+                    obu_evidence_pool[ocr_text]["last_seen_frame"] = current_frame_num
+                    historical_coord = obu_evidence_pool[ocr_text]['logical_coord']
+                    self.logger.debug(f"{log_prefix} 历史OBU '{ocr_text}' 更新。当前推断全局({current_global_r},{current_global_c}), 历史全局: {historical_coord}")
+                    if historical_coord and (abs(historical_coord[0] - current_global_r) > 1 or abs(historical_coord[1] - current_global_c) > 0) :
+                         self.logger.warning(f"{log_prefix} 历史OBU '{ocr_text}' 当前推断({current_global_r},{current_global_c}) 与历史 {historical_coord} 差异大。仍以历史为准。")
+                else:
+                    obu_evidence_pool[ocr_text] = {
                         "physical_anchors": [phys_anchor], "ocr_confidence": ocr_conf,
-                        "logical_coord": (current_global_r, current_global_c), # 直接使用当前帧推断的全局坐标
+                        "logical_coord": (current_global_r, current_global_c),
                         "first_seen_frame": current_frame_num, "last_seen_frame": current_frame_num
                     }
-                    self.logger.info(f"{log_prefix} 新OBU '{text}' 初步定位到全局 ({current_global_r},{current_global_c})")
-
+                    self.logger.info(f"{log_prefix} 新OBU '{ocr_text}' 定位到全局 ({current_global_r},{current_global_c})")
         self.logger.info(f"{log_prefix} OBU证据池更新完毕。总数: {len(obu_evidence_pool)}")
 
-        # 2. 构建最终输出矩阵 (基于 obu_evidence_pool 中所有已确定 logical_coord 的OBU)
-        # 清空矩阵 (保留-1)
-        for r_init in range(self.expected_total_rows):
-            for c_init in range(self.regular_cols_count):
-                if logical_matrix[r_init][c_init] != -1: # 只有非永久不可用才清零
+        # --- 构建最终输出矩阵 ---
+        # 2. 清空可填充的格子 (保留-1)
+        for r_init in range(_expected_total_rows): # 使用获取到的行数
+            for c_init in range(_regular_cols):    # 使用获取到的列数
+                if logical_matrix[r_init][c_init] != -1:
                     logical_matrix[r_init][c_init] = 0
                     if (r_init, c_init) in recognized_texts_map:
                         del recognized_texts_map[(r_init, c_init)]
 
-        # 填充矩阵，解决冲突 (OCR分高的优先)
+        # 3. (重要) 根据特殊行信息，强制设置特殊行两侧为-1
+        stable_params_ref = session_data.get("stable_layout_parameters") # 从会话数据中获取稳定参数
+        if stable_params_ref:
+            # special_row_at_logical_top 的判断应该基于稳定参数中的学习结果
+            is_special_row_top_from_stable = stable_params_ref.get("special_row_at_logical_top", False)
+
+            # 确定特殊行的全局逻辑索引
+            # 如果 stable_params_ref 中有 identified_special_row_frame_r，并且是第一帧，
+            # 那么可以用它和 delta_r 来计算全局特殊行号。
+            # 否则，我们只能基于一个通用假设（例如，特殊行总在底部，除非 special_row_at_logical_top 为 True）。
+
+            global_special_row_idx = -1
+            if current_frame_num == 1 and "identified_special_row_frame_r" in stable_params_ref and \
+               stable_params_ref["identified_special_row_frame_r"] != -1:
+                # 第一帧，并且成功识别了特殊行的 frame_r
+                special_frame_r = stable_params_ref["identified_special_row_frame_r"]
+                global_special_row_idx = special_frame_r + delta_r # delta_r 是第一帧的校正偏移
+                self.logger.info(f"{log_prefix} 第一帧：使用识别到的特殊行 frame_r={special_frame_r} 和 delta_r={delta_r} "
+                                 f"确定全局特殊行索引为 {global_special_row_idx}")
+            else: # 后续帧，或者第一帧未识别特殊行，依赖一个通用假设
+                global_special_row_idx = 0 if is_special_row_top_from_stable else _expected_total_rows - 1
+                self.logger.info(f"{log_prefix} 使用通用假设确定全局特殊行索引为 {global_special_row_idx} "
+                                 f"(基于is_special_top={is_special_row_top_from_stable})")
+
+            if 0 <= global_special_row_idx < _expected_total_rows and \
+               _regular_cols == 4 and _special_cols == 2: # 确保是4列转2列的特殊行场景
+                self.logger.info(f"{log_prefix} 应用特殊行-1标记规则到全局逻辑行 {global_special_row_idx}。")
+                logical_matrix[global_special_row_idx][0] = -1
+                logical_matrix[global_special_row_idx][3] = -1
+            else:
+                self.logger.warning(f"{log_prefix} 未应用特殊行-1标记：global_special_row_idx={global_special_row_idx} "
+                                     f"或行列配置不符 (reg_cols={_regular_cols}, spec_cols={_special_cols})")
+        else:
+            self.logger.warning(f"{log_prefix} stable_layout_parameters 为空，无法应用特殊行-1标记规则。")
+
+        # 4. 填充矩阵
         sorted_evidence = sorted(
             [(text, evi) for text, evi in obu_evidence_pool.items() if evi.get("logical_coord") is not None],
             key=lambda item: item[1].get("ocr_confidence", 0.0),
             reverse=True
         )
-
         for obu_text_fill, evidence_fill in sorted_evidence:
-            r_fill, c_fill = evidence_fill["logical_coord"]
-            # 确保行列号在13x4的有效范围内
-            if 0 <= r_fill < self.expected_total_rows and 0 <= c_fill < self.regular_cols_count:
-                if logical_matrix[r_fill][c_fill] == 0:
+            final_logical_coord = evidence_fill.get("logical_coord")
+            if not final_logical_coord: continue
+            r_fill, c_fill = final_logical_coord
+            if 0 <= r_fill < _expected_total_rows and 0 <= c_fill < _regular_cols:
+                if logical_matrix[r_fill][c_fill] == 0: # 只填充状态为0（未知）的格子
                     logical_matrix[r_fill][c_fill] = 1
                     recognized_texts_map[(r_fill, c_fill)] = obu_text_fill
                 elif logical_matrix[r_fill][c_fill] == 1:
-                    # 如果一个高分OBU想覆盖一个低分OBU（因为我们是按分数排序的，所以这里应该是低分想覆盖高分）
-                    # 或者不同OBU映射到同一位置
-                    if recognized_texts_map.get((r_fill,c_fill)) != obu_text_fill: # 确保不是同一个OBU的重复（理论上不应发生）
-                        self.logger.warning(f"{log_prefix} 矩阵填充冲突: 坑位 ({r_fill},{c_fill}) 已被 "
-                                         f"'{recognized_texts_map.get((r_fill,c_fill))}' (分更高或先到) 占据，无法放入 '{obu_text_fill}'。")
+                    if recognized_texts_map.get((r_fill,c_fill)) != obu_text_fill:
+                        self.logger.warning(f"{log_prefix} 矩阵填充冲突: ({r_fill},{c_fill}) 已被 '{recognized_texts_map.get((r_fill,c_fill))}' 占据，无法放入 '{obu_text_fill}'。")
+                # else: logical_matrix[r_fill][c_fill] == -1 (永久不可用) 或 2 (OCR失败)，不覆盖
             else:
-                 self.logger.warning(f"{log_prefix} OBU '{obu_text_fill}' 的最终逻辑坐标 ({r_fill},{c_fill}) 超出矩阵范围。")
+                 self.logger.warning(f"{log_prefix} OBU '{obu_text_fill}' 的最终逻辑坐标 ({r_fill},{c_fill}) 超出矩阵范围 ({_expected_total_rows}x{_regular_cols})。")
 
         num_filled_final = sum(1 for r_val in logical_matrix for status in r_val if status == 1)
         self.logger.info(f"{log_prefix} 最终矩阵构建完成，共填充 {num_filled_final} 个OBU。")
 
-        # 3. 标记OCR失败或无效的格子
-        #    对于当前帧检测到但未成功识别并放入obu_evidence_pool的YOLO框，
-        #    如果它们通过XY聚类得到了单帧逻辑坐标(frame_r, frame_c)，
-        #    并且转换到全局坐标后，该坑位为空，则标记为2.
-        for det_with_rc in current_frame_yolo_detections_with_frame_rc:
+        # 5. 标记OCR失败或无效的格子
+        for det_with_rc in current_frame_yolo_detections_with_rc:
             original_yolo_idx = det_with_rc["original_index"]
             ocr_item = map_ocr_results_by_yolo_idx.get(original_yolo_idx)
-
             is_ocr_valid_and_in_db = False
             if ocr_item:
                 ocr_text_check = ocr_item.get("ocr_final_text", "")
                 if ocr_text_check in VALID_OBU_CODES:
                     is_ocr_valid_and_in_db = True
-
-            if not is_ocr_valid_and_in_db: # 如果OCR失败或无效
+            if not is_ocr_valid_and_in_db:
                 frame_r, frame_c = det_with_rc.get('frame_r', -1), det_with_rc.get('frame_c', -1)
                 if frame_r != -1 and frame_c != -1:
                     global_r_fail = frame_r + delta_r
                     global_c_fail = frame_c
-
-                    if 0 <= global_r_fail < self.expected_total_rows and \
-                       0 <= global_c_fail < self.regular_cols_count and \
-                       logical_matrix[global_r_fail][global_c_fail] == 0: # 只标记之前是“未知”的
+                    if 0 <= global_r_fail < _expected_total_rows and \
+                       0 <= global_c_fail < _regular_cols and \
+                       logical_matrix[global_r_fail][global_c_fail] == 0:
                         logical_matrix[global_r_fail][global_c_fail] = 2
 
         self.logger.info(f"{log_prefix} 核心状态更新完成。")
