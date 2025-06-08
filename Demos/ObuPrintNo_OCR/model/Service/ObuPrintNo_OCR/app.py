@@ -69,36 +69,31 @@ def allowed_file(filename: str) -> bool:
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in config.ALLOWED_EXTENSIONS
 
-# --- 核心图像处理逻辑 (V3.2 - 基于独立XY聚类和第一帧特殊行强制锚定) ---
+# --- 核心图像处理逻辑 (V3.2_P0_Corrected - 基于独立XY聚类和第一帧特殊行强制锚定) ---
 def process_image_with_ocr_logic(
     image_path: str,
     session_id: str,
     logger: Any
 ) -> Tuple[List[List[int]], Dict[Tuple[int, int], str], Dict[str, float], List[Dict[str, str]]]:
-    log_prefix = f"会话 {session_id} (process_image V{config.APP_VERSION}):"
+    log_prefix = f"会话 {session_id} (process_image V{config.APP_VERSION}_P0_Corrected):" # 版本更新
     logger.info(f"{log_prefix} 开始处理图片 {os.path.basename(image_path)}")
 
     timing_profile = {}
     t_start_overall = time.time()
     warnings_list = []
 
-    # --- 初始化返回值，以防处理中途失败 ---
+    # --- 初始化返回值 ---
     session_for_init_return = session_data_store.get(session_id)
-    default_empty_matrix = [[0] * config.LAYOUT_REGULAR_COLS_COUNT for _ in range(config.LAYOUT_EXPECTED_TOTAL_ROWS)]
-    if session_for_init_return: # 尝试从会话配置初始化-1标记
-        current_layout_cfg_for_init = session_for_init_return.get("current_layout_config", {
-            "expected_total_rows": config.LAYOUT_EXPECTED_TOTAL_ROWS,
-            "regular_cols_count": config.LAYOUT_REGULAR_COLS_COUNT,
-            "special_row_cols_count": config.LAYOUT_SPECIAL_ROW_COLS_COUNT
-        })
-        if current_layout_cfg_for_init.get("expected_total_rows") > 0 and \
-           current_layout_cfg_for_init.get("regular_cols_count") == 4 and \
-           current_layout_cfg_for_init.get("special_row_cols_count") == 2:
-            # 假设特殊行在底部 (这个假设后续会被 layout_state_mgr 的判断覆盖)
-            special_row_idx = current_layout_cfg_for_init.get("expected_total_rows") - 1
-            if 0 <= special_row_idx < len(default_empty_matrix):
-                default_empty_matrix[special_row_idx][0] = -1
-                default_empty_matrix[special_row_idx][3] = -1
+    # 从会话配置或全局配置获取期望的行列数
+    expected_rows_for_empty = config.LAYOUT_EXPECTED_TOTAL_ROWS
+    expected_cols_for_empty = config.LAYOUT_REGULAR_COLS_COUNT
+    if session_for_init_return and "current_layout_config" in session_for_init_return:
+        expected_rows_for_empty = session_for_init_return["current_layout_config"].get("expected_total_rows", expected_rows_for_empty)
+        expected_cols_for_empty = session_for_init_return["current_layout_config"].get("regular_cols_count", expected_cols_for_empty)
+
+    default_empty_matrix = [[0] * expected_cols_for_empty for _ in range(expected_rows_for_empty)]
+    # 初始时，我们先不急着标记特殊行的-1，让 update_session_state_with_reference_logic 去做
+
     final_matrix: List[List[int]] = default_empty_matrix
     final_texts: Dict[Tuple[int, int], str] = {}
     # --- 结束返回值初始化 ---
@@ -110,7 +105,7 @@ def process_image_with_ocr_logic(
 
     global yolo_predictor, ocr_predictor, layout_state_mgr
     if not all([yolo_predictor, ocr_predictor, layout_state_mgr]):
-        logger.critical(f"{log_prefix} 一个或多个核心处理器未初始化！服务配置错误。")
+        logger.critical(f"{log_prefix} 一个或多个核心处理器未初始化！")
         return final_matrix, final_texts, {"error": "Server not ready"}, [{"message": "服务内部错误，处理器未就绪。"}]
 
     try:
@@ -127,12 +122,28 @@ def process_image_with_ocr_logic(
         timing_profile['2_yolo_detection'] = time.time() - t_step
         logger.info(f"{log_prefix} YOLO检测完成，找到 {len(yolo_detections)} 个有效框。")
 
+        # --- 新增：保存纯YOLO检测结果图 ---
+        if config.SAVE_PROCESS_PHOTOS and yolo_detections:
+            try:
+                yolo_raw_img = draw_yolo_detections_on_image(original_image, yolo_detections, None, config.YOLO_COCO_CLASSES)
+                img_name_base_raw = os.path.splitext(os.path.basename(image_path))[0]
+                ts_filename_raw = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                yolo_raw_dir = os.path.join(config.PROCESS_PHOTO_DIR, "yolo_raw")
+                if not os.path.exists(yolo_raw_dir): os.makedirs(yolo_raw_dir, exist_ok=True)
+                yolo_raw_path = os.path.join(yolo_raw_dir, f"yolo_raw_{img_name_base_raw}_{ts_filename_raw}.jpg")
+                cv2.imwrite(yolo_raw_path, yolo_raw_img, [cv2.IMWRITE_JPEG_QUALITY, config.PROCESS_PHOTO_JPG_QUALITY])
+                logger.info(f"{log_prefix} 纯YOLO检测结果图已保存: {yolo_raw_path}")
+            except Exception as e_save_yolo_raw:
+                logger.error(f"{log_prefix} 保存纯YOLO检测结果图失败: {e_save_yolo_raw}", exc_info=True)
+        # --- 结束新增 ---
+
+
         # 3. OCR处理
         t_step = time.time()
         ocr_tasks_for_pool, ocr_input_metadata = ocr_predictor.prepare_ocr_tasks_from_detections(
             original_image, yolo_detections,
             session_id_for_saving=session_id,
-            save_ocr_slices=config.SAVE_PROCESS_PHOTOS,
+            save_ocr_slices=config.SAVE_PROCESS_PHOTOS, # 这个控制是否保存我们预处理后的ROI
             process_photo_dir_base=config.PROCESS_PHOTO_DIR
         )
         raw_ocr_pool_results = ocr_predictor.recognize_prepared_tasks(ocr_tasks_for_pool)
@@ -140,96 +151,87 @@ def process_image_with_ocr_logic(
         timing_profile['3_ocr_processing'] = time.time() - t_step
         logger.info(f"{log_prefix} OCR处理完成，得到 {len(final_ocr_results_list)} 条结果。")
 
-        # 4. 布局分析与状态更新 (核心逻辑 - V3.2)
+        # 4. 布局分析与状态更新
         t_step = time.time()
         stable_layout_params_from_session = session.get("stable_layout_parameters")
         current_frame_num = session.get("frame_count", 0)
-        session_config = session["current_layout_config"] # 获取会话的布局配置
+        session_config = session["current_layout_config"]
 
-        # --- 步骤 4.1: 对当前帧YOLO结果进行XY独立聚类，并统计当前帧的布局参考参数 ---
         current_frame_layout_stats, yolo_detections_with_rc = layout_state_mgr.analyze_frame_layout_and_get_params(
-            yolo_detections,
-            (img_w, img_h),
-            session_config,
-            session_id
+            yolo_detections, (img_w, img_h), session_config, session_id
         )
 
         if not current_frame_layout_stats:
             logger.error(f"{log_prefix} 当前帧布局分析失败。")
-            warnings_list.append({"message": "警告：当前帧布局分析失败，结果可能不完整。", "code": "FRAME_LAYOUT_ANALYSIS_FAILED"})
-            current_frame_layout_stats = {} # 避免后续None错误
+            warnings_list.append({"message": "警告：当前帧布局分析失败。", "code": "FRAME_LAYOUT_ANALYSIS_FAILED"})
+            current_frame_layout_stats = {}
 
-        if not yolo_detections_with_rc:
-            logger.warning(f"{log_prefix} XY聚类未返回带rc的检测结果。")
-            yolo_detections_with_rc = [dict(d, frame_r=-1, frame_c=-1) for d in yolo_detections]
+        if not yolo_detections_with_rc and yolo_detections: # 如果有YOLO但聚类全失败
+            logger.warning(f"{log_prefix} XY聚类未返回带rc的检测结果，将使用空列表进行后续处理。")
+            yolo_detections_with_rc = [] # 后续逻辑应能处理空列表
 
-
-        # --- 步骤 4.2: 如果是首次有效帧，将当前帧的统计参数作为“稳定布局参数”的初始值 ---
         if not stable_layout_params_from_session and current_frame_layout_stats:
             logger.info(f"{log_prefix} 会话首次有效帧，使用当前帧统计结果作为初始稳定布局参考。")
             session["stable_layout_parameters"] = current_frame_layout_stats.copy()
             session["layout_parameters"]["is_calibrated"] = True
             stable_layout_params_from_session = session["stable_layout_parameters"]
 
-        if not stable_layout_params_from_session: # Fallback
+        if not stable_layout_params_from_session:
             logger.error(f"{log_prefix} 无法获取有效的稳定布局参数！")
             stable_layout_params_from_session = {
                 "median_obu_w_stable": 100, "median_obu_h_stable": 40,
                 "avg_physical_row_height_stable": 60,
                 "row_y_means_from_clustering": {}, "col_x_means_from_clustering": {},
                 "special_row_at_logical_top": False, "identified_special_row_frame_r": -1
-            }
+            } # 提供一个更完整的fallback
             session["stable_layout_parameters"] = stable_layout_params_from_session
 
-        # --- 步骤 4.3: Y轴锚定 (获取 delta_r，并处理第一帧特殊行强制锚定) ---
-        # 准备用于Y轴锚定的 current_frame_verified_obus_with_rc (已包含frame_r)
         current_frame_verified_obus_for_anchor = []
         map_yolo_idx_to_ocr_item = {ocr.get("original_index"): ocr for ocr in final_ocr_results_list if ocr}
         for det_rc in yolo_detections_with_rc:
-            original_yolo_idx = det_rc["original_index"]
-            ocr_item = map_yolo_idx_to_ocr_item.get(original_yolo_idx)
-            if ocr_item and ocr_item.get("ocr_final_text") in config.VALID_OBU_CODES:
-                yolo_details = ocr_item.get("yolo_anchor_details")
-                if yolo_details and det_rc.get("frame_r", -1) != -1 :
-                    current_frame_verified_obus_for_anchor.append({
-                        "text": ocr_item["ocr_final_text"],
-                        "physical_anchor": yolo_details,
-                        "ocr_confidence": ocr_item.get("ocr_confidence", 0.0),
-                        "original_yolo_idx": original_yolo_idx,
-                        "frame_r": det_rc["frame_r"]
-                    })
+           original_yolo_idx = det_rc["original_index"]
+           ocr_item = map_yolo_idx_to_ocr_item.get(original_yolo_idx)
+           if ocr_item and ocr_item.get("ocr_final_text") in config.VALID_OBU_CODES:
+               yolo_details = ocr_item.get("yolo_anchor_details")
+               if yolo_details and det_rc.get("frame_r", -1) != -1 :
+                   current_frame_verified_obus_for_anchor.append({
+                       "text": ocr_item["ocr_final_text"],
+                       "physical_anchor": yolo_details,
+                       "ocr_confidence": ocr_item.get("ocr_confidence", 0.0),
+                       "original_yolo_idx": original_yolo_idx,
+                       "frame_r": det_rc["frame_r"]
+                   })
 
         y_anchor_info, estimated_row_y_for_drawing = layout_state_mgr.determine_y_axis_anchor(
-            current_frame_verified_obus_for_anchor,
-            session["obu_evidence_pool"],
-            current_frame_layout_stats, # 传递当前帧的统计参数
-            session_id,
-            current_frame_num,
-            session_config # 传递会话配置
+           current_frame_verified_obus_for_anchor,
+           session["obu_evidence_pool"],
+           current_frame_layout_stats, # 传递当前帧的统计参数
+           session_id,
+           current_frame_num,
+           session_config
         )
         session["status_flags"]["y_anchor_info_current_frame"] = y_anchor_info
 
-        # --- 检查第一帧特殊行锚定是否失败 (根据行政规定) ---
+        # --- 行政干预：检查第一帧特殊行锚定是否失败 ---
         if current_frame_num == 1 and y_anchor_info.get("is_first_frame_anchor_failed", False):
             logger.error(f"{log_prefix} 【行政规定检查失败】第一帧未能通过特殊行成功锚定！")
             warnings_list.append({
-                "message": "错误：第一帧未能识别到近端特殊行或锚定失败，请确保从近端特殊行开始拍摄并保证其清晰可见。",
-                "code": "FIRST_FRAME_ANCHOR_FAILED"
+                "message": "错误：第一帧未能识别到近端特殊行或锚定失败。请确保从近端特殊行开始拍摄，并保证其清晰、完整（至少两格）地被拍摄入图。",
+                "code": "FIRST_FRAME_ANCHOR_FAILED_ADMIN_RULE"
             })
-            # 对于第一帧锚定失败，我们应该直接返回，不进行后续的状态更新
             timing_profile['4_layout_and_state'] = time.time() - t_step
             # final_matrix 和 final_texts 保持在try之前的默认空值
-            return final_matrix, final_texts, timing_profile, warnings_list
+            return final_matrix, final_texts, timing_profile, warnings_list # 中断后续处理
 
         if y_anchor_info.get("is_skipped_due_to_no_overlap"):
-                warnings_list.append({
-                    "message": "检测到可能的拍摄跳跃或漏帧，当前图像结果未被有效处理。",
-                    "code": "FRAME_SKIPPED_NO_OVERLAP"
-                })
+            warnings_list.append({
+                "message": "检测到可能的拍摄跳跃或漏帧，当前图像结果未被有效处理。",
+                "code": "FRAME_SKIPPED_NO_OVERLAP"
+            })
 
         session["layout_parameters"]["row_y_estimates"] = estimated_row_y_for_drawing
 
-        # --- 步骤 4.4: 绘制当前帧的布局投射图 ---
+        # --- 绘制单帧逻辑投射图 ---
         if config.SAVE_PROCESS_PHOTOS:
             logger.critical(f"{log_prefix} CRITICAL_LOG: 即将调用 draw_stable_layout_on_image。")
             try:
@@ -238,74 +240,60 @@ def process_image_with_ocr_logic(
                     (img_w, img_h),
                     session_id,
                     current_frame_num,
-                    y_anchor_info, # 传递包含delta_r的锚定信息
-                    current_frame_layout_stats # 传递当前帧的统计参数
+                    y_anchor_info,
+                    current_frame_layout_stats
                 )
                 logger.critical(f"{log_prefix} CRITICAL_LOG: draw_stable_layout_on_image 调用完成。")
             except Exception as e_draw_layout:
                 logger.critical(f"{log_prefix} CRITICAL_LOG: 绘制单帧布局图时发生严重错误: {e_draw_layout}", exc_info=True)
 
-        # --- 步骤 4.5: 核心状态更新 ---
-        if not y_anchor_info.get("is_skipped_due_to_no_overlap", False) and \
-            not (current_frame_num == 1 and y_anchor_info.get("is_first_frame_anchor_failed", False)): # 确保锚定成功才更新
-
-            _, _, warnings_from_state_update = layout_state_mgr.update_session_state_with_reference_logic(
-                session,
-                yolo_detections_with_rc,
-                final_ocr_results_list,
-                y_anchor_info,
-                session_id,
-                current_frame_num,
-                session_config # 传递会话配置
+        # --- 核心状态更新 ---
+        if not y_anchor_info.get("is_skipped_due_to_no_overlap", False):
+            # (第一帧锚定失败的情况已在上面处理并返回)
+            final_matrix, final_texts, warnings_from_state_update = layout_state_mgr.update_session_state_with_reference_logic(
+               session,
+               yolo_detections_with_rc,
+               final_ocr_results_list,
+               y_anchor_info,
+               session_id,
+               current_frame_num,
+               session_config
             )
             if warnings_from_state_update: warnings_list.extend(warnings_from_state_update)
+        else: # 如果是漏帧，则直接使用会话中已有的矩阵和文本
+            final_matrix = session.get("logical_matrix", final_matrix)
+            final_texts = session.get("recognized_texts_map", final_texts)
+
 
         timing_profile['4_layout_and_state'] = time.time() - t_step
         logger.info(f"{log_prefix} 布局分析与状态更新完成。")
 
-        # 5. (可选) 保存YOLO调试中标注图
-        if config.SAVE_PROCESS_PHOTOS and yolo_detections: #确保yolo_detections非空
+        # 5. 保存最终的YOLO标注图 (带OCR文本)
+        if config.SAVE_PROCESS_PHOTOS and yolo_detections:
             t_step_draw_yolo = time.time()
-            # 创建一个从YOLO原始索引到OCR文本的映射，用于在标注图上显示识别结果
             ocr_texts_for_draw_map = {}
-            if final_ocr_results_list: # 确保final_ocr_results_list非空且包含内容
+            if final_ocr_results_list:
                 for ocr_item in final_ocr_results_list:
                     if ocr_item and isinstance(ocr_item, dict) and "original_index" in ocr_item:
                         ocr_texts_for_draw_map[ocr_item.get("original_index")] = ocr_item.get("ocr_final_text", "ERR")
-
-            # 调用 image_utils 中的函数进行绘制
-            # yolo_detections 已经是 List[Dict] 格式，符合 draw_yolo_detections_on_image 的输入要求
             annotated_img = draw_yolo_detections_on_image(
-                original_image,
-                yolo_detections, # 使用原始的、未经frame_r/c修改的yolo_detections列表
-                ocr_texts_for_draw_map,
-                config.YOLO_COCO_CLASSES
+                original_image, yolo_detections, ocr_texts_for_draw_map, config.YOLO_COCO_CLASSES
             )
-
-            # 准备保存路径和文件名
             img_name_base = os.path.splitext(os.path.basename(image_path))[0]
-            ts_filename = datetime.now().strftime("%Y%m%d%H%M%S%f") # 使用更精确的时间戳
-
-            # 确保 process_photo 目录存在
+            ts_filename = datetime.now().strftime("%Y%m%d%H%M%S%f")
             process_photo_main_dir = config.PROCESS_PHOTO_DIR
             if not os.path.exists(process_photo_main_dir):
                 os.makedirs(process_photo_main_dir, exist_ok=True)
-
             annotated_path = os.path.join(process_photo_main_dir, f"annotated_{img_name_base}_{ts_filename}.jpg")
-
             try:
                 save_success = cv2.imwrite(annotated_path, annotated_img, [cv2.IMWRITE_JPEG_QUALITY, config.PROCESS_PHOTO_JPG_QUALITY])
-                if save_success:
-                    logger.info(f"{log_prefix} YOLO标注图已保存: {annotated_path}")
-                else:
-                    logger.error(f"{log_prefix} cv2.imwrite未能保存YOLO标注图到 {annotated_path} (返回False)")
+                if save_success: logger.info(f"{log_prefix} YOLO标注图已保存: {annotated_path}")
+                else: logger.error(f"{log_prefix} cv2.imwrite未能保存YOLO标注图到 {annotated_path} (返回False)")
             except Exception as e_save_ann:
                 logger.error(f"{log_prefix} 保存YOLO标注图失败: {e_save_ann}", exc_info=True)
             timing_profile['5_drawing_annotations'] = time.time() - t_step_draw_yolo
 
-        # 从session中获取最终结果 (在try块的成功路径末尾)
-        final_matrix = session.get("logical_matrix", final_matrix)
-        final_texts = session.get("recognized_texts_map", final_texts)
+        # final_matrix 和 final_texts 已经在上面根据处理结果被正确赋值了
 
     except FileNotFoundError as e_fnf:
         logger.error(f"{log_prefix} 处理图片时文件未找到: {e_fnf}", exc_info=True)
