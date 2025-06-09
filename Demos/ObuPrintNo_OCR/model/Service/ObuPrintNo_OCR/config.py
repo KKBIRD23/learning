@@ -6,7 +6,7 @@ import os
 BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) # 假设app.py在Service目录下
 
 # --- 模型路径 ---
-ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "BarCode_Detect", "BarCode_Detect_dynamic.onnx")
+ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "BarCode_Detect", "Barcode_dynamic-True_half-False.onnx")
 OCR_REC_MODEL_DIR = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "PP-OCRv5_server_rec_infer")
 
 # --- Flask 应用配置 ---
@@ -33,6 +33,7 @@ OCR_DIGIT_ROI_Y_OFFSET_FACTOR = -0.15 # 数字区域相对于YOLO框顶部的Y�
 OCR_DIGIT_ROI_HEIGHT_FACTOR = 0.7     # 数字区域高度相对于YOLO框高度的因子
 OCR_DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05 # 数字区域宽度扩展因子
 OCR_NUM_WORKERS = 4 # 并行OCR工作进程数 (0或1表示串行)
+SAVE_TRAINING_ROI_IMAGES = True     # 是否保存在训练模式下使用的ROI切片 (预处理后，送入OCR前)
 
 # --- 布局与状态管理配置 ---
 LAYOUT_EXPECTED_TOTAL_ROWS = 13
@@ -57,7 +58,7 @@ LAYOUT_MIN_CORE_ANCHORS_FOR_STATS = 3 # 用于统计稳定参数的最小锚点�
 # --- 过程图片保存 ---
 SAVE_PROCESS_PHOTOS = True
 PROCESS_PHOTO_DIR = "process_photo"
-PROCESS_PHOTO_JPG_QUALITY = 85
+PROCESS_PHOTO_JPG_QUALITY = 65  # 过程JPEG图片质量 (0-100, 100为最高质量)
 
 # --- 有效OBU码列表 (模拟数据库) ---
 VALID_OBU_CODES = {
