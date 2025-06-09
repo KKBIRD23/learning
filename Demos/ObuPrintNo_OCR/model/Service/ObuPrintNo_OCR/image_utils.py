@@ -36,27 +36,23 @@ def crop_roi_from_image(image, bbox_xyxy: list):
     return image[y1_clip:y2_clip, x1_clip:x2_clip]
 
 def preprocess_roi_for_ocr(roi_image, target_height: int):
-    """对裁剪出的ROI进行OCR预处理（缩放、灰度、二值化）。"""
+    """
+    对裁剪出的ROI进行OCR预处理。
+    根据模型配置文件(inference.yml)，模型需要一个固定尺寸的输入。
+    """
     if roi_image is None:
         return None
 
-    h_roi, w_roi = roi_image.shape[:2]
-    if h_roi == 0 or w_roi == 0:
-        return None
+    # 从 inference.yml 中得知，模型期望的固定输入尺寸是 3x48x320。
+    # 因此，我们直接将图像缩放到 (320, 48) (宽, 高)。
+    fixed_width = 320
 
-    scale = target_height / h_roi
-    target_w = int(w_roi * scale)
-    if target_w <= 0:
-        target_w = 1 # 避免宽度为0
+    # 注意：这里会拉伸或压缩图像，改变其原始宽高比，这是为了完美匹配模型训练时的做法。
+    # 我们使用 INTER_LANCZOS4 或 INTER_CUBIC 作为高质量的插值方法。
+    resized_roi = cv2.resize(roi_image, (fixed_width, target_height),
+                             interpolation=cv2.INTER_LANCZOS4)
 
-    resized_roi = cv2.resize(roi_image, (target_w, target_height),
-                             interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
-
-    gray_roi = cv2.cvtColor(resized_roi, cv2.COLOR_BGR2GRAY)
-    _, binary_roi = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-    # PaddleOCR通常需要BGR格式输入
-    return cv2.cvtColor(binary_roi, cv2.COLOR_GRAY2BGR)
+    return resized_roi
 
 
 def draw_yolo_detections_on_image(image_to_draw_on, yolo_detections, ocr_texts_map=None, coco_classes=None):

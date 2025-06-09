@@ -7,7 +7,40 @@ BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 # --- 模型路径 ---
 ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "BarCode_Detect", "Barcode_dynamic-True_half-False.onnx")
-OCR_REC_MODEL_DIR = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "PP-OCRv5_server_rec_infer")
+OCR_ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "en_PP-OCRv4_mobile_rec_onnx", "inference.onnx")
+OCR_KEYS_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "en_PP-OCRv4_mobile_rec_onnx", "keys.txt")
+
+# ==================汉明距离算法配置区==========================
+# --- 新增：OCR结果纠错配置 (最终专家版) ---
+# 是否启用OCR结果的模糊匹配纠错功能
+ENABLE_OCR_CORRECTION = True
+
+# 纠错模式: 'MASK' 是唯一被推荐用于生产的模式，因为它最安全、最可控。
+OCR_CORRECTION_MODE = 'MASK'
+
+# 汉明距离阈值。在掩码指定的固定位上，允许的最大纠错字符数。
+# 例如，设为2，掩码为"5001____00______"，意味着"5001"和"00"这6个固定位上，最多允许错2个字符。
+OCR_CORRECTION_HAMMING_THRESHOLD = 2
+
+# 'MASK' 模式专用：定义一个纠错掩码
+# 用实际字符表示该位置是“必须匹配或可纠错”的，用 '_' (下划线) 表示该位置是“不可信的、易变的”。
+# 我们的逻辑将只信任和纠正非下划线部分。
+OCR_CORRECTION_MASK = "50012___________"
+# ==================汉明距离算法配置区==========================
+
+# ==================启发式规则配置区==========================
+# 步骤1：启发式替换规则。在进行匹配前，会将key替换为value。
+# 这对于修正模型系统性的、可预测的错误非常有效。
+OCR_HEURISTIC_REPLACEMENTS = {
+    'S': '5',
+    'B': '8',
+    'I': '1',
+    'O': '0',
+    'D': '0',
+    'Z': '2',
+    'G': '6'
+}
+# ==================启发式规则配置区==========================
 
 # --- Flask 应用配置 ---
 UPLOAD_FOLDER = 'uploads'
@@ -59,6 +92,10 @@ LAYOUT_MIN_CORE_ANCHORS_FOR_STATS = 3 # 用于统计稳定参数的最小锚点�
 SAVE_PROCESS_PHOTOS = True
 PROCESS_PHOTO_DIR = "process_photo"
 PROCESS_PHOTO_JPG_QUALITY = 65  # 过程JPEG图片质量 (0-100, 100为最高质量)
+
+# --- 新增：零散识别模式配置 ---
+SCATTERED_MODE_ANNOTATED_IMAGE_WIDTH = 600 # 零散模式下返回的标注图宽度 (像素)
+SCATTERED_MODE_IMAGE_JPG_QUALITY = 75    # 零散模式下返回的标注图JPEG质量
 
 # --- 有效OBU码列表 (模拟数据库) ---
 VALID_OBU_CODES = {
