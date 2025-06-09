@@ -15,11 +15,11 @@ import uuid
 from typing import List, Dict, Tuple, Any, Optional
 import base64 # 用于图像的Base64编码
 import re # 导入re模块
-from waitress import serve
+from waitress import serve # 导入生产级服务器
 
 # --- 从新模块导入 ---
 import config
-from image_utils import read_image_cv2, draw_yolo_detections_on_image
+from image_utils import read_image_cv2, draw_ocr_results_on_image # 导入新的绘图函数
 from yolo_handler import YoloHandler
 from ocr_handler import OcrHandler
 from layout_and_state_manager import LayoutStateManager
@@ -119,7 +119,7 @@ def find_best_match_by_mask(
         # 如果在决胜局中依然存在平局，为了绝对安全，放弃纠错
         return None
 
-# --- 核心图像处理逻辑 (V3.4_P1_FINAL_PERFECT_SYSTEM_V3) ---
+# --- 核心图像处理逻辑 (V4.0_FINAL_PERFECT_SYSTEM) ---
 def process_image_with_ocr_logic(
     image_path: str,
     session_id: str,
@@ -135,21 +135,34 @@ def process_image_with_ocr_logic(
     scattered_results_list: Optional[List[Dict[str, Any]]] = None
     annotated_image_base64_str: Optional[str] = None
 
+    # --- 初始化默认返回值 ---
+    session_obj_for_init = session_data_store.get(session_id)
+    current_layout_config_for_init = config
+    if session_obj_for_init and "current_layout_config" in session_obj_for_init:
+        current_layout_config_for_init = session_obj_for_init["current_layout_config"]
+    expected_rows_for_empty = getattr(current_layout_config_for_init, "LAYOUT_EXPECTED_TOTAL_ROWS", config.LAYOUT_EXPECTED_TOTAL_ROWS)
+    expected_cols_for_empty = getattr(current_layout_config_for_init, "LAYOUT_REGULAR_COLS_COUNT", config.LAYOUT_REGULAR_COLS_COUNT)
+    default_empty_matrix = [[0] * expected_cols_for_empty for _ in range(expected_rows_for_empty)]
+    final_matrix: Optional[List[List[int]]] = default_empty_matrix
+    final_texts: Optional[Dict[Tuple[int, int], str]] = {}
+    # --- 结束返回值初始化 ---
+
     session = session_data_store.get(session_id)
     if not session:
         logger.error(f"{log_prefix} 严重错误 - 未找到会话数据（在处理中丢失）！")
         if mode == 'full_layout':
-            return None, {}, {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], None, None
+            return default_empty_matrix, {}, {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], None, None
         else:
             return None, None, {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], [], None
+
 
     global yolo_predictor, ocr_predictor, layout_state_mgr
     if not yolo_predictor or not ocr_predictor:
         logger.critical(f"{log_prefix} YOLO或OCR核心处理器未初始化！")
-        return None, None, {"error": "Server not ready"}, [{"message": "服务内部错误(YOLO/OCR)。"}], None, None
+        return final_matrix, final_texts, {"error": "Server not ready"}, [{"message": "服务内部错误(YOLO/OCR)。"}], None, None
     if mode == 'full_layout' and not layout_state_mgr:
         logger.critical(f"{log_prefix} 整版模式下LayoutStateManager未初始化！")
-        return None, None, {"error": "Server not ready"}, [{"message": "服务内部错误(LSM)。"}], None, None
+        return final_matrix, final_texts, {"error": "Server not ready"}, [{"message": "服务内部错误(LSM)。"}], None, None
 
     try:
         if "frame_count" not in session: session["frame_count"] = 0
@@ -159,6 +172,7 @@ def process_image_with_ocr_logic(
         if "status_flags" not in session: session["status_flags"] = {}
         session["status_flags"]["frame_skipped_due_to_no_overlap"] = False
         session["status_flags"]["is_first_frame_anchor_failed"] = False
+
 
         t_step = time.time()
         original_image = read_image_cv2(image_path)
@@ -185,7 +199,7 @@ def process_image_with_ocr_logic(
 
         t_step = time.time()
         ocr_tasks_for_pool, ocr_input_metadata = ocr_predictor.prepare_ocr_tasks_from_detections(
-            original_image, yolo_detections, session_id, current_frame_num, config.SAVE_PROCESS_PHOTOS
+            original_image, yolo_detections, session_id, current_frame_num, config.SAVE_TRAINING_ROI_IMAGES
         )
         raw_ocr_pool_results = ocr_predictor.recognize_prepared_tasks(ocr_tasks_for_pool)
         final_ocr_results_list = ocr_predictor.consolidate_ocr_results(raw_ocr_pool_results, ocr_input_metadata)
@@ -281,6 +295,8 @@ def process_image_with_ocr_logic(
             accumulated_obu_texts_set = set(session.get("accumulated_obu_texts_set", []))
 
             current_frame_recognized_count = 0
+            final_recognized_texts_this_frame = set()
+
             for ocr_item in final_ocr_results_list:
                 raw_text = ocr_item.get("ocr_final_text", "").strip()
 
@@ -294,13 +310,11 @@ def process_image_with_ocr_logic(
                     continue
 
                 if candidate_text in config.VALID_OBU_CODES:
-                    if candidate_text not in accumulated_obu_texts_set:
-                        current_frame_recognized_count += 1
-                        logger.info(f"精确匹配成功: '{candidate_text}' (原始: '{raw_text}')")
-                    accumulated_obu_texts_set.add(candidate_text)
+                    final_recognized_texts_this_frame.add(candidate_text)
+                    ocr_item['final_corrected_text'] = candidate_text
                     continue
 
-                if config.ENABLE_OCR_CORRECTION and config.OCR_CORRECTION_MODE == 'MASK':
+                if config.ENABLE_OCR_CORRECTION:
                     corrected_text = find_best_match_by_mask(
                         candidate_text,
                         config.VALID_OBU_CODES,
@@ -309,30 +323,44 @@ def process_image_with_ocr_logic(
                     )
 
                     if corrected_text:
-                        if corrected_text not in accumulated_obu_texts_set:
-                            current_frame_recognized_count += 1
-                            logger.info(f"掩码纠错成功: 将 '{candidate_text}' (原始: '{raw_text}') 修正为 '{corrected_text}'")
-                        accumulated_obu_texts_set.add(corrected_text)
+                        final_recognized_texts_this_frame.add(corrected_text)
+                        ocr_item['final_corrected_text'] = corrected_text
+                        logger.info(f"掩码纠错成功: 将 '{candidate_text}' (原始: '{raw_text}') 修正为 '{corrected_text}'")
+
+            for text in final_recognized_texts_this_frame:
+                if text not in accumulated_obu_texts_set:
+                    current_frame_recognized_count += 1
+                accumulated_obu_texts_set.add(text)
 
             session["accumulated_obu_texts_set"] = accumulated_obu_texts_set
             logger.info(f"{log_prefix} “累积式零散识别”：当前帧有效识别 {current_frame_recognized_count} 个, "
                         f"累积总数 {len(accumulated_obu_texts_set)} 个。")
 
-            if config.SAVE_PROCESS_PHOTOS and yolo_detections:
+            if config.SAVE_TRAINING_ROI_IMAGES:
+                label_file_path = os.path.join(config.PROCESS_PHOTO_DIR, "training_rois", session_id, "label.txt")
+                with open(label_file_path, 'a', encoding='utf-8') as f:
+                    for ocr_item in final_ocr_results_list:
+                        corrected_text = ocr_item.get('final_corrected_text')
+                        if corrected_text:
+                            roi_filename = f"f{current_frame_num}_yolo{ocr_item['original_index']}_h48_w320.png"
+                            f.write(f"{roi_filename}\t{corrected_text}\n")
+
+            if config.SAVE_PROCESS_PHOTOS:
+                annotated_img_full_size = draw_ocr_results_on_image(
+                    original_image, yolo_detections, final_ocr_results_list, config.VALID_OBU_CODES
+                )
+                if config.SAVE_SCATTERED_ANNOTATED_IMAGE:
+                    annotated_dir = os.path.join(config.PROCESS_PHOTO_DIR, "scattered_annotated")
+                    if not os.path.exists(annotated_dir): os.makedirs(annotated_dir, exist_ok=True)
+                    annotated_path = os.path.join(annotated_dir, f"annotated_s{session_id[:8]}_f{current_frame_num}.jpg")
+                    cv2.imwrite(annotated_path, annotated_img_full_size, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
                 try:
-                    ocr_map_for_drawing_current_frame = {
-                        ocr_item.get("original_index"): ocr_item.get("ocr_final_text")
-                        for ocr_item in final_ocr_results_list
-                        if ocr_item and ocr_item.get("ocr_final_text") in config.VALID_OBU_CODES}
-                    annotated_img_current_frame = draw_yolo_detections_on_image(
-                        original_image, yolo_detections, ocr_map_for_drawing_current_frame, config.YOLO_COCO_CLASSES)
                     target_w = config.SCATTERED_MODE_ANNOTATED_IMAGE_WIDTH
-                    orig_h_ann, orig_w_ann = annotated_img_current_frame.shape[:2]
-                    if orig_w_ann == 0: raise ValueError("Annotated image width is zero for scatter mode.")
+                    orig_h_ann, orig_w_ann = annotated_img_full_size.shape[:2]
                     scale_ann = target_w / orig_w_ann
                     target_h_ann = int(orig_h_ann * scale_ann)
-                    if target_h_ann <=0 : target_h_ann = 1
-                    resized_annotated_img = cv2.resize(annotated_img_current_frame, (target_w, target_h_ann),
+                    resized_annotated_img = cv2.resize(annotated_img_full_size, (target_w, target_h_ann),
                                                        interpolation=cv2.INTER_AREA if scale_ann < 1 else cv2.INTER_LINEAR)
                     retval, buffer = cv2.imencode('.jpg', resized_annotated_img,
                                                   [cv2.IMWRITE_JPEG_QUALITY, config.SCATTERED_MODE_IMAGE_JPG_QUALITY])
@@ -574,4 +602,5 @@ if __name__ == '__main__':
         app.logger.info(f"  缩小标注图Base64返回 (零散模式): enabled")
     if config.SAVE_TRAINING_ROI_IMAGES:
          app.logger.info(f"  训练用ROI切片保存: enabled (to process_photo/training_rois/)")
+
     serve(app, host='0.0.0.0', port=5000)
