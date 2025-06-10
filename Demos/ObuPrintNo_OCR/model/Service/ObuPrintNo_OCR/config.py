@@ -7,30 +7,18 @@ BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 # --- 模型路径 ---
 ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "BarCode_Detect", "Barcode_dynamic-True_half-False.onnx")
-OCR_ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "en_PP-OCRv4_mobile_rec_onnx", "inference.onnx")
-OCR_KEYS_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "en_PP-OCRv4_mobile_rec_onnx", "keys.txt")
+OCR_ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "PP-OCRv5_server_rec_onnx", "inference.onnx")
+OCR_KEYS_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "PP-OCRv5_server_rec_onnx", "keys.txt")
 
-# ==================汉明距离算法配置区==========================
-# --- 新增：OCR结果纠错配置 (最终专家版) ---
-# 是否启用OCR结果的模糊匹配纠错功能
-ENABLE_OCR_CORRECTION = True
 
-# 纠错模式: 'MASK' 是唯一被推荐用于生产的模式，因为它最安全、最可控。
-OCR_CORRECTION_MODE = 'MASK'
 
-# 汉明距离阈值。在掩码指定的固定位上，允许的最大纠错字符数。
-# 例如，设为2，掩码为"5001____00______"，意味着"5001"和"00"这6个固定位上，最多允许错2个字符。
-OCR_CORRECTION_HAMMING_THRESHOLD = 2
 
-# 'MASK' 模式专用：定义一个纠错掩码
-# 用实际字符表示该位置是“必须匹配或可纠错”的，用 '_' (下划线) 表示该位置是“不可信的、易变的”。
-# 我们的逻辑将只信任和纠正非下划线部分。
-OCR_CORRECTION_MASK = "50012___________"
-# ==================汉明距离算法配置区==========================
 
 # ==================启发式规则配置区==========================
 # 步骤1：启发式替换规则。在进行匹配前，会将key替换为value。
-# 这对于修正模型系统性的、可预测的错误非常有效。
+# 是否启用OCR启发式纠错功能
+ENABLE_OCR_CORRECTION = True
+
 OCR_HEURISTIC_REPLACEMENTS = {
     'S': '5',
     'B': '8',
@@ -41,6 +29,20 @@ OCR_HEURISTIC_REPLACEMENTS = {
     'G': '6'
 }
 # ==================启发式规则配置区==========================
+
+# ==================数据库配置===============================
+DB_USERNAME = "VFJ_CQGS"
+DB_PASSWORD = "vfj_20231007"
+# Oracle的连接描述符(DSN)
+DB_DSN = "192.168.1.200:1521/ORCL"
+# 要查询的表名和列名
+DB_TABLE_NAME = "SINGCHIPOBU"  # <--- 【请您将这里替换为真实的表名】
+DB_COLUMN_NAME = "OBUSAMSERIALNO" # <--- 【请您将这里替换为真实的列名】
+
+# --- 安全与同步配置 ---
+# 用于保护 /refresh-cache 接口的API密钥
+REFRESH_API_KEY = "Vfj@1234.wq" # 建议您后续修改为一个更复杂的密钥
+# ==================数据库配置================================
 
 # --- Flask 应用配置 ---
 UPLOAD_FOLDER = 'uploads'
@@ -103,20 +105,8 @@ SAVE_SCATTERED_ANNOTATED_IMAGE = True
 
 # --- 有效OBU码列表 (模拟数据库) ---
 VALID_OBU_CODES = {
-    "5001240700323449", "5001240700323450", "5001240700323445", "5001240700323446",
-    "5001240700323447", "5001240700323448", "5001240700323441", "5001240700323442",
-    "5001240700323443", "5001240700323444", "5001240700323437", "5001240700323438",
-    "5001240700323439", "5001240700323440", "5001240700323433", "5001240700323434",
-    "5001240700323435", "5001240700323436", "5001240700323430", "5001240700323431",
-    "5001240700323432", "5001240700323429", "5001240700323428", "5001240700323427",
-    "5001240700323426", "5001240700323425", "5001240700323424", "5001240700323423",
-    "5001240700323422", "5001240700323421", "5001240700323420", "5001240700323419",
-    "5001240700323418", "5001240700323417", "5001240700323416", "5001240700323415",
-    "5001240700323414", "5001240700323413", "5001240700323412", "5001240700323411",
-    "5001240700323410", "5001240700323409", "5001240700323408", "5001240700323407",
-    "5001240700323406", "5001240700323405", "5001240700323404", "5001240700323403",
-    "5001240700323402", "5001240700323401"
+
 }
 
 # --- 版本号 ---
-APP_VERSION = "v6.0.0_modular_refactor"
+APP_VERSION = "v4.0_Optimized_Engine"

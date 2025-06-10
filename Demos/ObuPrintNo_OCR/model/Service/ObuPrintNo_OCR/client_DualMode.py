@@ -11,10 +11,10 @@ import base64 # 用于解码Base64图像数据
 # --- 配置 ---
 SERVER_URL = "http://127.0.0.1:5000/predict"
 IMAGE_PATHS_TO_UPLOAD = [
-    r"../../../../DATA/PIC/1pic/1-1.jpg",
-    r"../../../../DATA/PIC/1pic/1-2.jpg",
-    r"../../../../DATA/PIC/1pic/1-3.jpg",
-    r"../../../../DATA/PIC/1pic/1-4.jpg",
+    r"../../../../DATA/PIC/1pic/2-1.jpg",
+    r"../../../../DATA/PIC/1pic/2-2.jpg",
+    r"../../../../DATA/PIC/1pic/2-3.jpg",
+    r"../../../../DATA/PIC/1pic/2-4.jpg",
     # 用于测试第一帧特殊行失败的情况 (如果服务端仍保留整版模式的行政干预)
     # r"../../../../DATA/PIC/2pic/2-1.jpg",
 ]

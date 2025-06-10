@@ -1,4 +1,4 @@
-# app.py
+# app.py (FINAL VERSION with Database Integration)
 import os
 import cv2
 import numpy as np
@@ -12,27 +12,35 @@ import atexit
 import logging
 from logging.handlers import RotatingFileHandler
 import uuid
-from typing import List, Dict, Tuple, Any, Optional
-import base64 # 用于图像的Base64编码
-import re # 导入re模块
-from waitress import serve # 导入生产级服务器
+from typing import List, Dict, Tuple, Any, Optional, Set
+import base64
+import re
+from waitress import serve
+import threading # 导入线程模块，虽然最终方案未使用后台线程，但保留以备未来扩展
 
 # --- 从新模块导入 ---
 import config
-from image_utils import read_image_cv2, draw_ocr_results_on_image # 导入新的绘图函数
+from image_utils import read_image_cv2, draw_ocr_results_on_image, draw_yolo_detections_on_image
 from yolo_handler import YoloHandler
 from ocr_handler import OcrHandler
 from layout_and_state_manager import LayoutStateManager
+from database_handler import DatabaseHandler
 
 # --- 全局变量 ---
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = config.UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = config.MAX_CONTENT_LENGTH
 
+# 核心处理器
 yolo_predictor: Optional[YoloHandler] = None
 ocr_predictor: Optional[OcrHandler] = None
 layout_state_mgr: Optional[LayoutStateManager] = None
+db_handler: Optional[DatabaseHandler] = None
+
+# 核心数据缓存
 session_data_store: Dict[str, Any] = {}
+VALID_OBU_CODES_CACHE: Set[str] = set()
+CACHE_LOCK = threading.Lock()
 
 # --- 日志设置 ---
 def setup_logging(app_instance):
@@ -53,73 +61,7 @@ def setup_logging(app_instance):
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in config.ALLOWED_EXTENSIONS
 
-# --- 最终版专家纠错函数 (带决胜局逻辑) ---
-def find_best_match_by_mask(
-    ocr_text: str,
-    valid_codes: set,
-    mask: str,
-    threshold: int
-) -> Optional[str]:
-    """
-    使用掩码和汉明距离，在有效OBU码中为OCR结果寻找最可靠的匹配。
-    增加了决胜局（Tie-Breaker）逻辑来处理多个候选项。
-    """
-    if len(ocr_text) != 16 or len(mask) != 16:
-        return None
-
-    candidate_matches = []
-    min_mask_distance = threshold + 1
-
-    # 步骤1: 找出所有在掩码固定位上足够相似的候选者
-    for valid_code in valid_codes:
-        # 健壮性检查：确保valid_code也符合掩码的固定位，避免脏数据干扰
-        is_candidate = True
-        for vc, mc in zip(valid_code, mask):
-            if mc != '_' and vc != mc:
-                is_candidate = False
-                break
-        if not is_candidate:
-            continue
-
-        distance = 0
-        for ocr_char, valid_char, mask_char in zip(ocr_text, valid_code, mask):
-            if mask_char != '_' and ocr_char != valid_char:
-                distance += 1
-
-        if distance < min_mask_distance:
-            min_mask_distance = distance
-            candidate_matches = [valid_code]
-        elif distance == min_mask_distance:
-            candidate_matches.append(valid_code)
-
-    # 步骤2: 根据候选者数量进行决策
-    if not candidate_matches or min_mask_distance > threshold:
-        return None # 没有找到任何在阈值内的匹配
-
-    if len(candidate_matches) == 1:
-        return candidate_matches[0] # 只有一个最佳匹配，直接返回
-
-    # 步骤3: 决胜局！在多个候选项中，选择全局汉明距离最小的那个
-    min_global_distance = 17 # 大于16即可
-    final_best_match = None
-    found_tie_in_global = False
-
-    for code in candidate_matches:
-        global_distance = sum(1 for c1, c2 in zip(ocr_text, code) if c1 != c2)
-        if global_distance < min_global_distance:
-            min_global_distance = global_distance
-            final_best_match = code
-            found_tie_in_global = False
-        elif global_distance == min_global_distance:
-            found_tie_in_global = True
-
-    if not found_tie_in_global:
-        return final_best_match
-    else:
-        # 如果在决胜局中依然存在平局，为了绝对安全，放弃纠错
-        return None
-
-# --- 核心图像处理逻辑 (V4.0_FINAL_PERFECT_SYSTEM) ---
+# --- 核心图像处理逻辑 (V4.0_FINAL_PHILOSOPHY_SYSTEM) ---
 def process_image_with_ocr_logic(
     image_path: str,
     session_id: str,
@@ -135,34 +77,22 @@ def process_image_with_ocr_logic(
     scattered_results_list: Optional[List[Dict[str, Any]]] = None
     annotated_image_base64_str: Optional[str] = None
 
-    # --- 初始化默认返回值 ---
-    session_obj_for_init = session_data_store.get(session_id)
-    current_layout_config_for_init = config
-    if session_obj_for_init and "current_layout_config" in session_obj_for_init:
-        current_layout_config_for_init = session_obj_for_init["current_layout_config"]
-    expected_rows_for_empty = getattr(current_layout_config_for_init, "LAYOUT_EXPECTED_TOTAL_ROWS", config.LAYOUT_EXPECTED_TOTAL_ROWS)
-    expected_cols_for_empty = getattr(current_layout_config_for_init, "LAYOUT_REGULAR_COLS_COUNT", config.LAYOUT_REGULAR_COLS_COUNT)
-    default_empty_matrix = [[0] * expected_cols_for_empty for _ in range(expected_rows_for_empty)]
-    final_matrix: Optional[List[List[int]]] = default_empty_matrix
-    final_texts: Optional[Dict[Tuple[int, int], str]] = {}
-    # --- 结束返回值初始化 ---
-
     session = session_data_store.get(session_id)
     if not session:
         logger.error(f"{log_prefix} 严重错误 - 未找到会话数据（在处理中丢失）！")
         if mode == 'full_layout':
-            return default_empty_matrix, {}, {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], None, None
+            return None, {}, {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], None, None
         else:
             return None, None, {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], [], None
 
 
-    global yolo_predictor, ocr_predictor, layout_state_mgr
+    global yolo_predictor, ocr_predictor, layout_state_mgr, VALID_OBU_CODES_CACHE, CACHE_LOCK
     if not yolo_predictor or not ocr_predictor:
         logger.critical(f"{log_prefix} YOLO或OCR核心处理器未初始化！")
-        return final_matrix, final_texts, {"error": "Server not ready"}, [{"message": "服务内部错误(YOLO/OCR)。"}], None, None
+        return None, None, {"error": "Server not ready"}, [{"message": "服务内部错误(YOLO/OCR)。"}], None, None
     if mode == 'full_layout' and not layout_state_mgr:
         logger.critical(f"{log_prefix} 整版模式下LayoutStateManager未初始化！")
-        return final_matrix, final_texts, {"error": "Server not ready"}, [{"message": "服务内部错误(LSM)。"}], None, None
+        return None, None, {"error": "Server not ready"}, [{"message": "服务内部错误(LSM)。"}], None, None
 
     try:
         if "frame_count" not in session: session["frame_count"] = 0
@@ -240,7 +170,7 @@ def process_image_with_ocr_logic(
             for det_rc_full in yolo_detections_with_rc:
                original_yolo_idx_full = det_rc_full["original_index"]
                ocr_item_full = map_yolo_idx_to_ocr_item_full.get(original_yolo_idx_full)
-               if ocr_item_full and ocr_item_full.get("ocr_final_text") in config.VALID_OBU_CODES:
+               if ocr_item_full and ocr_item_full.get("ocr_final_text") in VALID_OBU_CODES_CACHE:
                    yolo_details_full = ocr_item_full.get("yolo_anchor_details")
                    if yolo_details_full and det_rc_full.get("frame_r", -1) != -1 :
                        current_frame_verified_obus_for_anchor.append({
@@ -297,11 +227,15 @@ def process_image_with_ocr_logic(
             current_frame_recognized_count = 0
             final_recognized_texts_this_frame = set()
 
+            with CACHE_LOCK:
+                local_valid_codes = VALID_OBU_CODES_CACHE.copy()
+
             for ocr_item in final_ocr_results_list:
                 raw_text = ocr_item.get("ocr_final_text", "").strip()
 
+                # 步骤1: 净化与标准化
                 candidate_text = raw_text
-                if config.OCR_HEURISTIC_REPLACEMENTS:
+                if config.ENABLE_OCR_CORRECTION and config.OCR_HEURISTIC_REPLACEMENTS:
                     for char_to_replace, replacement in config.OCR_HEURISTIC_REPLACEMENTS.items():
                         candidate_text = candidate_text.replace(char_to_replace, replacement)
 
@@ -309,23 +243,11 @@ def process_image_with_ocr_logic(
                 if len(candidate_text) != 16:
                     continue
 
-                if candidate_text in config.VALID_OBU_CODES:
+                # 步骤2: 精确匹配
+                if candidate_text in local_valid_codes:
                     final_recognized_texts_this_frame.add(candidate_text)
                     ocr_item['final_corrected_text'] = candidate_text
-                    continue
-
-                if config.ENABLE_OCR_CORRECTION:
-                    corrected_text = find_best_match_by_mask(
-                        candidate_text,
-                        config.VALID_OBU_CODES,
-                        config.OCR_CORRECTION_MASK,
-                        config.OCR_CORRECTION_HAMMING_THRESHOLD
-                    )
-
-                    if corrected_text:
-                        final_recognized_texts_this_frame.add(corrected_text)
-                        ocr_item['final_corrected_text'] = corrected_text
-                        logger.info(f"掩码纠错成功: 将 '{candidate_text}' (原始: '{raw_text}') 修正为 '{corrected_text}'")
+                # 注意：我们在这里不再有else，因为我们已经抛弃了汉明距离
 
             for text in final_recognized_texts_this_frame:
                 if text not in accumulated_obu_texts_set:
@@ -340,6 +262,7 @@ def process_image_with_ocr_logic(
                 label_file_path = os.path.join(config.PROCESS_PHOTO_DIR, "training_rois", session_id, "label.txt")
                 with open(label_file_path, 'a', encoding='utf-8') as f:
                     for ocr_item in final_ocr_results_list:
+                        # 我们只为那些最终被采纳的（即有'final_corrected_text'键）的OBU生成标签
                         corrected_text = ocr_item.get('final_corrected_text')
                         if corrected_text:
                             roi_filename = f"f{current_frame_num}_yolo{ocr_item['original_index']}_h48_w320.png"
@@ -347,7 +270,7 @@ def process_image_with_ocr_logic(
 
             if config.SAVE_PROCESS_PHOTOS:
                 annotated_img_full_size = draw_ocr_results_on_image(
-                    original_image, yolo_detections, final_ocr_results_list, config.VALID_OBU_CODES
+                    original_image, yolo_detections, final_ocr_results_list, local_valid_codes
                 )
                 if config.SAVE_SCATTERED_ANNOTATED_IMAGE:
                     annotated_dir = os.path.join(config.PROCESS_PHOTO_DIR, "scattered_annotated")
@@ -379,7 +302,7 @@ def process_image_with_ocr_logic(
             ocr_texts_for_final_draw = {
                 ocr_item.get("original_index"): ocr_item.get("ocr_final_text")
                 for ocr_item in final_ocr_results_list
-                if ocr_item and ocr_item.get("ocr_final_text") in config.VALID_OBU_CODES
+                if ocr_item and ocr_item.get("ocr_final_text") in VALID_OBU_CODES_CACHE
             }
             annotated_img_final = draw_yolo_detections_on_image(
                 original_image, yolo_detections, ocr_texts_for_final_draw, config.YOLO_COCO_CLASSES)
@@ -402,6 +325,35 @@ def process_image_with_ocr_logic(
     return final_matrix, final_texts, timing_profile, warnings_list, scattered_results_list, annotated_image_base64_str
 
 # app.py (Continued - Part 3 - Final)
+
+# --- 新增：数据缓存刷新接口 ---
+@app.route('/refresh-cache', methods=['POST'])
+def refresh_cache_route():
+    logger = current_app.logger
+
+    provided_key = request.headers.get('X-API-KEY')
+    if provided_key != config.REFRESH_API_KEY:
+        logger.warning("检测到无效的API Key，拒绝缓存刷新请求。")
+        return jsonify({"error": "Invalid or missing API Key"}), 403
+
+    logger.info("接收到缓存刷新请求，开始从数据库同步数据...")
+
+    global VALID_OBU_CODES_CACHE, db_handler
+    if not db_handler:
+        logger.error("数据库处理器未初始化，无法刷新缓存。")
+        return jsonify({"error": "Database handler not initialized"}), 500
+
+    new_data = db_handler.load_valid_obus()
+
+    if new_data is not None:
+        with CACHE_LOCK:
+            VALID_OBU_CODES_CACHE = new_data
+        logger.info(f"缓存刷新成功，新的OBU码数量: {len(VALID_OBU_CODES_CACHE)}")
+        return jsonify({"message": "Cache refreshed successfully", "count": len(VALID_OBU_CODES_CACHE)}), 200
+    else:
+        logger.error("从数据库加载数据失败，缓存未更新。")
+        return jsonify({"error": "Failed to load data from database"}), 500
+
 
 # --- Flask 路由 ---
 @app.route('/predict', methods=['POST'])
@@ -538,9 +490,23 @@ def predict_image_route():
 
 # --- 应用初始化与启动 ---
 def initialize_global_handlers(app_logger):
-    global yolo_predictor, ocr_predictor, layout_state_mgr
+    global yolo_predictor, ocr_predictor, layout_state_mgr, db_handler, VALID_OBU_CODES_CACHE
     app_logger.info("--- 开始初始化全局处理器 ---")
     try:
+        # 1. 初始化数据库处理器
+        db_handler = DatabaseHandler(logger=app_logger)
+
+        # 2. 启动时加载初始OBU码到缓存
+        initial_obus = db_handler.load_valid_obus()
+        if initial_obus is not None:
+            with CACHE_LOCK:
+                VALID_OBU_CODES_CACHE = initial_obus
+        else:
+            app_logger.error("启动时从数据库加载OBU码失败！服务将无法正常工作。正在终止...")
+            # 根据您的要求，在初始化失败时终止服务
+            raise RuntimeError("Failed to load initial OBU codes from database.")
+
+        # 3. 初始化模型处理器
         yolo_predictor = YoloHandler(
             model_path=config.ONNX_MODEL_PATH,
             conf_threshold=config.YOLO_CONFIDENCE_THRESHOLD,
@@ -576,12 +542,16 @@ def initialize_global_handlers(app_logger):
         app_logger.critical(f"全局处理器初始化失败: {e}", exc_info=True)
         raise
 
-def cleanup_ocr_pool_on_exit():
-    global ocr_predictor
+def cleanup_on_exit():
+    global ocr_predictor, db_handler
     if ocr_predictor and hasattr(ocr_predictor, 'close_pool'):
         print("应用退出，正在关闭OCR处理池...")
         ocr_predictor.close_pool()
         print("OCR处理池已关闭。")
+    if db_handler and hasattr(db_handler, 'close_pool'):
+        print("应用退出，正在关闭数据库连接池...")
+        db_handler.close_pool()
+        print("数据库连接池已关闭。")
 
 if __name__ == '__main__':
     setup_logging(app)
@@ -590,17 +560,12 @@ if __name__ == '__main__':
     except Exception as e_init:
         app.logger.critical(f"应用启动失败，无法初始化核心处理器: {e_init}")
         exit(1)
-    atexit.register(cleanup_ocr_pool_on_exit)
+
+    atexit.register(cleanup_on_exit)
+
     if not os.path.exists(config.UPLOAD_FOLDER): os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
     if not os.path.exists(config.PROCESS_PHOTO_DIR): os.makedirs(config.PROCESS_PHOTO_DIR, exist_ok=True)
-    app.logger.info(f"服务版本 {config.APP_VERSION} 启动中... 监听 0.0.0.0:5000")
-    app.logger.info(f"过程图片保存开关 (SAVE_PROCESS_PHOTOS): {config.SAVE_PROCESS_PHOTOS}")
-    if config.SAVE_PROCESS_PHOTOS:
-        app.logger.info(f"  纯YOLO检测图保存: enabled (to process_photo/yolo_raw/)")
-        app.logger.info(f"  单帧逻辑投射图保存 (整版模式): enabled (to process_photo/)")
-        app.logger.info(f"  最终标注图保存 (整版模式): enabled (to process_photo/)")
-        app.logger.info(f"  缩小标注图Base64返回 (零散模式): enabled")
-    if config.SAVE_TRAINING_ROI_IMAGES:
-         app.logger.info(f"  训练用ROI切片保存: enabled (to process_photo/training_rois/)")
+
+    app.logger.info(f"服务版本 {config.APP_VERSION} 启动中... 使用生产级服务器 Waitress。")
 
     serve(app, host='0.0.0.0', port=5000)
