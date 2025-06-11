@@ -82,22 +82,23 @@ def draw_yolo_detections_on_image(image_to_draw_on: np.ndarray, yolo_detections:
 def draw_ocr_results_on_image(
     original_image: np.ndarray,
     yolo_detections: List[Dict[str, Any]],
-    final_ocr_results: List[Dict[str, Any]],
-    valid_obu_codes: set # 虽然不再直接用它校验，但保留参数以备未来使用
+    final_ocr_results: List[Dict[str, Any]]
 ) -> np.ndarray:
     """
-    在图像上绘制带有半透明高亮色块的最终识别结果。
-    - 绿色: 成功识别并通过校验的OBU (包括被纠错的)。
-    - 红色: YOLO检测到，但最终未被采纳的OBU。
+    在图像上绘制带有半透明高亮色块的最终识别结果 (V4.1版)。
+    - 绿色: 确信的OBU (目击次数 >= 阈值)。
+    - 黄色: 待定的OBU (目击次数 < 阈值)。
+    - 红色: 识别失败或未通过校验的OBU。
     """
     img_overlay = original_image.copy()
     alpha = 0.3  # 透明度
 
-    color_success = (0, 255, 0)  # 绿色
-    color_fail = (0, 0, 255)      # 红色
+    color_confirmed = (0, 255, 0)    # 绿色
+    color_pending = (0, 255, 255)  # 黄色
+    color_failed = (0, 0, 255)       # 红色
 
-    # 创建一个映射，方便通过YOLO的原始索引查找OCR结果
-    ocr_results_map = {item['original_index']: item for item in final_ocr_results}
+    # 创建一个映射，方便通过YOLO的原始索引查找OCR结果的状态
+    ocr_results_map = {item['original_index']: item for item in final_ocr_results if 'original_index' in item}
 
     for det in yolo_detections:
         box = det.get('box_yolo_xyxy')
@@ -105,22 +106,22 @@ def draw_ocr_results_on_image(
             continue
 
         x1, y1, x2, y2 = map(int, box)
-
         ocr_result_item = ocr_results_map.get(det['original_index'])
+        status = ocr_result_item.get('status', 'failed_unknown') if ocr_result_item else 'failed_unknown'
 
-        # ==================================================================
-        # ===               【 buddy，最终的修正就在这里！ 】               ===
-        # ==================================================================
-        # 我们直接检查 'final_corrected_text' 这个键是否存在。
-        # 这个键只在 app.py 中被成功采纳（无论是精确匹配还是纠错）时才会被添加。
-        is_successful = ocr_result_item is not None and 'final_corrected_text' in ocr_result_item
-        # ==================================================================
-
-        # 选择颜色
-        fill_color = color_success if is_successful else color_fail
+        # 根据状态选择颜色
+        if status == 'confirmed':
+            fill_color = color_confirmed
+        elif status == 'pending':
+            fill_color = color_pending
+        else: # 'failed_format', 'failed_validation', 'failed_empty', etc.
+            fill_color = color_failed
 
         # 绘制半透明填充色块
         sub_img = img_overlay[y1:y2, x1:x2]
+        # 确保sub_img不是空的
+        if sub_img.size == 0:
+            continue
         color_rect = np.full(sub_img.shape, fill_color, dtype=np.uint8)
         res_colored = cv2.addWeighted(sub_img, 1 - alpha, color_rect, alpha, 0.0)
         img_overlay[y1:y2, x1:x2] = res_colored

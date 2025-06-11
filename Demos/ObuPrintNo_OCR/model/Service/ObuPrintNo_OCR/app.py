@@ -1,11 +1,11 @@
-# app.py (FINAL VERSION with Database Integration)
+# app.py (V18.1_Final_Adjudication)
 import os
 import cv2
 import numpy as np
 import time
 import traceback
 import multiprocessing
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, current_app
 from werkzeug.utils import secure_filename
 import atexit
@@ -16,14 +16,14 @@ from typing import List, Dict, Tuple, Any, Optional, Set
 import base64
 import re
 from waitress import serve
-import threading # 导入线程模块，虽然最终方案未使用后台线程，但保留以备未来扩展
+import threading
+from itertools import groupby
 
 # --- 从新模块导入 ---
 import config
-from image_utils import read_image_cv2, draw_ocr_results_on_image, draw_yolo_detections_on_image
+from image_utils import read_image_cv2, draw_ocr_results_on_image
 from yolo_handler import YoloHandler
 from ocr_handler import OcrHandler
-from layout_and_state_manager import LayoutStateManager
 from database_handler import DatabaseHandler
 
 # --- 全局变量 ---
@@ -34,13 +34,13 @@ app.config['MAX_CONTENT_LENGTH'] = config.MAX_CONTENT_LENGTH
 # 核心处理器
 yolo_predictor: Optional[YoloHandler] = None
 ocr_predictor: Optional[OcrHandler] = None
-layout_state_mgr: Optional[LayoutStateManager] = None
 db_handler: Optional[DatabaseHandler] = None
 
 # 核心数据缓存
 session_data_store: Dict[str, Any] = {}
 VALID_OBU_CODES_CACHE: Set[str] = set()
 CACHE_LOCK = threading.Lock()
+SESSION_CLEANUP_INTERVAL = timedelta(hours=config.SESSION_CLEANUP_HOURS)
 
 # --- 日志设置 ---
 def setup_logging(app_instance):
@@ -53,79 +53,201 @@ def setup_logging(app_instance):
         backupCount=config.LOG_FILE_BACKUP_COUNT, encoding='utf-8')
     formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]')
     file_handler.setFormatter(formatter)
+
+    # 【核心修正】从config动态读取日志级别
+    # 使用getattr从logging模块获取对应的级别常量，如果config中配置错误，则默认为INFO
+    log_level_from_config = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
+
     if not any(isinstance(h, RotatingFileHandler) and h.baseFilename == file_handler.baseFilename for h in app_instance.logger.handlers):
         app_instance.logger.addHandler(file_handler)
-    app_instance.logger.setLevel(logging.INFO)
+
+    app_instance.logger.setLevel(log_level_from_config)
+    app_instance.logger.info(f"日志级别已设置为: {config.LOG_LEVEL}")
     app_instance.logger.info(f"Flask应用日志系统已启动。版本: {config.APP_VERSION}")
 
 def allowed_file(filename: str) -> bool:
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in config.ALLOWED_EXTENSIONS
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in config.ALLOWED_EXTENSIONS
 
-# --- 核心图像处理逻辑 (V4.0_FINAL_PHILOSOPHY_SYSTEM) ---
+# --- 核心裁决引擎辅助函数 (V18.1) ---
+
+def hamming_distance(s1: str, s2: str) -> int:
+    """计算两个等长字符串之间的汉明距离。"""
+    if len(s1) != len(s2):
+        return float('inf') # 或者抛出异常，取决于业务需求
+    return sum(c1 != c2 for c1, c2 in zip(s1, s2))
+
+def analyze_evidence_pool(evidence_pool: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    对证据池进行快照分析，识别号段，为后续裁决提供上下文。
+    """
+    analysis = {
+        "total_count": len(evidence_pool),
+        "segments": [],
+        "is_chaotic": False,
+        "is_pure_and_full": False,
+    }
+    if analysis["total_count"] < config.MIN_SEGMENT_MEMBERS:
+        return analysis
+
+    # 1. 提取、转换并排序
+    try:
+        sorted_obus = sorted([int(obu) for obu in evidence_pool.keys()])
+    except (ValueError, TypeError):
+        # 如果key不是纯数字，这里会出错，做个保护
+        return analysis
+
+    # 2. 识别所有独立号段
+    segments = []
+    if sorted_obus:
+        current_segment = [sorted_obus[0]]
+        for i in range(1, len(sorted_obus)):
+            if sorted_obus[i] - sorted_obus[i-1] <= config.SEGMENT_GAP_THRESHOLD:
+                current_segment.append(sorted_obus[i])
+            else:
+                if len(current_segment) >= config.MIN_SEGMENT_MEMBERS:
+                    segments.append(current_segment)
+                current_segment = [sorted_obus[i]]
+        if len(current_segment) >= config.MIN_SEGMENT_MEMBERS:
+            segments.append(current_segment)
+
+    analysis["segments"] = segments
+
+    # 3. 判断是否为“混沌模式”
+    if not segments or len(segments) > config.MAX_SEGMENTS_THRESHOLD:
+        analysis["is_chaotic"] = True
+
+    # 4. 判断是否为“满溢纯净”模式
+    if analysis["total_count"] > config.PURITY_CHECK_THRESHOLD:
+        for seg in segments:
+            # 检查是否存在一个长度超过阈值的连号段
+            if len(seg) >= config.PURITY_CHECK_THRESHOLD and (seg[-1] - seg[0] == len(seg) - 1):
+                analysis["is_pure_and_full"] = True
+                analysis["pure_segment"] = seg # 记录这个纯净段
+                break
+
+    return analysis
+
+def adjudicate_candidate(
+    candidate: str,
+    analysis_context: Dict[str, Any],
+    logger: Any
+) -> bool:
+    """
+    根据分析上下文，对单个候选码进行最终裁决。
+    返回 True 表示通过，False 表示抛弃。
+    """
+    log_prefix = f"裁决 '{candidate}':"
+
+    # 规则1: “满溢纯净”规则
+    if analysis_context["is_pure_and_full"]:
+        is_in_pure_segment = int(candidate) in analysis_context["pure_segment"]
+        if not is_in_pure_segment:
+            logger.debug(f"{log_prefix} [拒绝] - 未通过“满溢纯净”规则。")
+        else:
+            logger.debug(f"{log_prefix} [通过] - 符合“满溢纯净”规则。")
+        return is_in_pure_segment
+
+    # 规则2: “混沌安全阀”
+    if not config.ENABLE_HAMMING_CHECK or analysis_context["is_chaotic"]:
+        logger.debug(f"{log_prefix} [跳过汉明] - 系统处于混沌模式或已禁用汉明检查。")
+        return True
+
+    # 如果还没有形成任何有效号段，则默认通过汉明校验
+    if not analysis_context["segments"]:
+        logger.debug(f"{log_prefix} [跳过汉明] - 无有效号段可供比对，默认通过。")
+        return True
+
+    # 规则3: “多号段汉明裁决”
+    for i, segment in enumerate(analysis_context["segments"]):
+        min_dist = float('inf')
+        for member_int in segment:
+            member_str = f"{member_int:016d}"
+            if len(candidate) == len(member_str):
+                dist = hamming_distance(candidate, member_str)
+                if dist < min_dist:
+                    min_dist = dist
+
+        logger.debug(f"{log_prefix} 与号段{i+1} (共{len(segment)}个) 的最小汉明距离为 {min_dist}。")
+        if min_dist <= config.HAMMING_THRESHOLD:
+            logger.debug(f"{log_prefix} [通过] - 汉明距离 {min_dist} <= 阈值 {config.HAMMING_THRESHOLD}。")
+            return True
+
+    logger.debug(f"{log_prefix} [拒绝] - 与所有已知号段的汉明距离都过大。")
+    return False
+
+def extract_and_correct_candidates(
+    raw_text: str,
+    logger: Any
+) -> List[str]:
+    """
+    从原始OCR文本中，精准提取并修正候选OBU码。
+    """
+    if not raw_text:
+        return []
+
+    pattern = r'[A-Z0-9-]{16,20}'
+    initial_candidates = re.findall(pattern, raw_text)
+    if not initial_candidates:
+        return []
+
+    corrected_candidates = []
+    for cand in initial_candidates:
+        temp_cand = cand
+        if config.ENABLE_HEADER_CORRECTION and not temp_cand.startswith(config.CORRECTION_HEADER_PREFIX):
+            if temp_cand.startswith(('S', '6', '8', 'B')):
+                 temp_cand = config.CORRECTION_HEADER_PREFIX + temp_cand[len(config.CORRECTION_HEADER_PREFIX):]
+
+        if config.ENABLE_OCR_CORRECTION and config.OCR_HEURISTIC_REPLACEMENTS:
+            for char_to_replace, replacement in config.OCR_HEURISTIC_REPLACEMENTS.items():
+                temp_cand = temp_cand.replace(char_to_replace, replacement)
+
+        temp_cand = temp_cand.replace('-', '')
+
+        if len(temp_cand) == 16 and temp_cand.isdigit():
+            corrected_candidates.append(temp_cand)
+        else:
+            logger.debug(f"候选 '{cand}' 修正后为 '{temp_cand}'，因格式不符被抛弃。")
+
+    return corrected_candidates
+
+# --- 核心图像处理逻辑 (V18.1_Final_Adjudication) ---
 def process_image_with_ocr_logic(
     image_path: str,
     session_id: str,
-    logger: Any,
-    mode: str = 'scattered_cumulative_ocr',
-) -> Tuple[Optional[List[List[int]]], Optional[Dict[Any, Any]], Dict[str, float], List[Dict[str, str]], Optional[List[Dict[str,Any]]], Optional[str]]:
-    log_prefix = f"会话 {session_id} (process_image V{config.APP_VERSION}_ScatterFocus M:{mode}):"
+    logger: Any
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, float], List[Dict[str, str]], Optional[str]]:
+    log_prefix = f"会话 {session_id} (process_image V{config.APP_VERSION}):"
     logger.info(f"{log_prefix} 开始处理图片 {os.path.basename(image_path)}")
 
     timing_profile = {}
     t_start_overall = time.time()
     warnings_list = []
-    scattered_results_list: Optional[List[Dict[str, Any]]] = None
     annotated_image_base64_str: Optional[str] = None
 
     session = session_data_store.get(session_id)
     if not session:
-        logger.error(f"{log_prefix} 严重错误 - 未找到会话数据（在处理中丢失）！")
-        if mode == 'full_layout':
-            return None, {}, {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], None, None
-        else:
-            return None, None, {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], [], None
+        logger.error(f"{log_prefix} 严重错误 - 未找到会话数据！")
+        return [], [], {"error": "Session data lost"}, [{"message": "会话数据丢失。"}], None
 
-
-    global yolo_predictor, ocr_predictor, layout_state_mgr, VALID_OBU_CODES_CACHE, CACHE_LOCK
+    global yolo_predictor, ocr_predictor, VALID_OBU_CODES_CACHE, CACHE_LOCK
     if not yolo_predictor or not ocr_predictor:
         logger.critical(f"{log_prefix} YOLO或OCR核心处理器未初始化！")
-        return None, None, {"error": "Server not ready"}, [{"message": "服务内部错误(YOLO/OCR)。"}], None, None
-    if mode == 'full_layout' and not layout_state_mgr:
-        logger.critical(f"{log_prefix} 整版模式下LayoutStateManager未初始化！")
-        return None, None, {"error": "Server not ready"}, [{"message": "服务内部错误(LSM)。"}], None, None
+        return [], [], {"error": "Server not ready"}, [{"message": "服务内部错误(YOLO/OCR)。"}], None
 
     try:
-        if "frame_count" not in session: session["frame_count"] = 0
         session["frame_count"] += 1
         current_frame_num = session["frame_count"]
         session["last_activity"] = datetime.now()
-        if "status_flags" not in session: session["status_flags"] = {}
-        session["status_flags"]["frame_skipped_due_to_no_overlap"] = False
-        session["status_flags"]["is_first_frame_anchor_failed"] = False
 
-
+        # --- 图像读取与模型推理 ---
         t_step = time.time()
         original_image = read_image_cv2(image_path)
-        img_h, img_w = original_image.shape[:2]
         timing_profile['1_image_reading'] = time.time() - t_step
-        logger.info(f"{log_prefix} 原始图片: {os.path.basename(image_path)} (H={img_h}, W={img_w})")
 
         t_step = time.time()
         yolo_detections = yolo_predictor.detect(original_image)
         timing_profile['2_yolo_detection'] = time.time() - t_step
-        logger.info(f"{log_prefix} YOLO检测完成，找到 {len(yolo_detections)} 个有效框。")
-
-        if config.SAVE_PROCESS_PHOTOS and yolo_detections:
-            try:
-                yolo_raw_img = draw_yolo_detections_on_image(original_image, yolo_detections, None, config.YOLO_COCO_CLASSES)
-                img_name_base_raw = os.path.splitext(os.path.basename(image_path))[0]
-                ts_filename_raw = datetime.now().strftime("%Y%m%d%H%M%S%f")
-                yolo_raw_dir = os.path.join(config.PROCESS_PHOTO_DIR, "yolo_raw")
-                if not os.path.exists(yolo_raw_dir): os.makedirs(yolo_raw_dir, exist_ok=True)
-                yolo_raw_path = os.path.join(yolo_raw_dir, f"yolo_raw_{img_name_base_raw}_s{session_id[:8]}_f{current_frame_num}_{ts_filename_raw}.jpg")
-                cv2.imwrite(yolo_raw_path, yolo_raw_img, [cv2.IMWRITE_JPEG_QUALITY, config.PROCESS_PHOTO_JPG_QUALITY])
-            except Exception as e_save_yolo_raw:
-                logger.error(f"{log_prefix} 保存纯YOLO检测结果图失败: {e_save_yolo_raw}", exc_info=True)
 
         t_step = time.time()
         ocr_tasks_for_pool, ocr_input_metadata = ocr_predictor.prepare_ocr_tasks_from_detections(
@@ -134,185 +256,118 @@ def process_image_with_ocr_logic(
         raw_ocr_pool_results = ocr_predictor.recognize_prepared_tasks(ocr_tasks_for_pool)
         final_ocr_results_list = ocr_predictor.consolidate_ocr_results(raw_ocr_pool_results, ocr_input_metadata)
         timing_profile['3_ocr_processing'] = time.time() - t_step
-        logger.info(f"{log_prefix} OCR处理完成，得到 {len(final_ocr_results_list)} 条结果。")
 
-        if mode == 'full_layout':
-            logger.info(f"{log_prefix} 进入“整版识别”模式处理流程。")
-            t_step_layout = time.time()
-            stable_layout_params_from_session = session.get("stable_layout_parameters")
-            session_config = session["current_layout_config"]
+        # --- V18.1 核心裁决与证据累积 ---
+        logger.info(f"{log_prefix} 执行V18.1最终裁决与证据累积流程。")
+        t_step_adjudication = time.time()
 
-            current_frame_layout_stats, yolo_detections_with_rc = layout_state_mgr.analyze_frame_layout_and_get_params(
-                yolo_detections, (img_w, img_h), session_config, session_id
-            )
+        evidence_pool = session.get("evidence_pool", {})
+        with CACHE_LOCK:
+            local_valid_codes = VALID_OBU_CODES_CACHE.copy()
 
-            if not current_frame_layout_stats:
-                logger.error(f"{log_prefix} (整版模式) 当前帧布局分析失败。")
-                warnings_list.append({"message": "警告：当前帧布局分析失败。", "code": "FRAME_LAYOUT_ANALYSIS_FAILED"}); current_frame_layout_stats = {}
-            if not yolo_detections_with_rc and yolo_detections:
-                logger.warning(f"{log_prefix} (整版模式) XY聚类未返回带rc的检测结果。"); yolo_detections_with_rc = [dict(d, frame_r=-1, frame_c=-1) for d in yolo_detections]
+        # 步骤1: 对当前证据池进行一次快照分析，获取裁决上下文
+        analysis_context = analyze_evidence_pool(evidence_pool)
+        logger.info(f"{log_prefix} 情景分析: 混沌模式={analysis_context['is_chaotic']}, "
+                    f"纯净满溢={analysis_context['is_pure_and_full']}, "
+                    f"识别号段数={len(analysis_context['segments'])}")
 
-            if not stable_layout_params_from_session and current_frame_layout_stats:
-                logger.info(f"{log_prefix} (整版模式) 会话首次有效帧，使用当前帧统计结果作为初始稳定布局参考。")
-                session["stable_layout_parameters"] = current_frame_layout_stats.copy(); session["layout_parameters"]["is_calibrated"] = True
-                stable_layout_params_from_session = session["stable_layout_parameters"]
+        for ocr_item in final_ocr_results_list:
+            if not ocr_item: continue
 
-            if not stable_layout_params_from_session:
-                logger.error(f"{log_prefix} (整版模式) 无法获取有效的稳定布局参数！")
-                stable_layout_params_from_session = {
-                    "median_obu_w_stable": 100, "median_obu_h_stable": 40, "avg_physical_row_height_stable": 60,
-                    "row_y_means_from_clustering": {}, "col_x_means_from_clustering": {},
-                    "special_row_at_logical_top": False, "identified_special_row_frame_r": -1}
-                session["stable_layout_parameters"] = stable_layout_params_from_session
+            raw_text = ocr_item.get("ocr_final_text", "").strip()
 
-            current_frame_verified_obus_for_anchor = []
-            map_yolo_idx_to_ocr_item_full = {ocr.get("original_index"): ocr for ocr in final_ocr_results_list if ocr}
-            for det_rc_full in yolo_detections_with_rc:
-               original_yolo_idx_full = det_rc_full["original_index"]
-               ocr_item_full = map_yolo_idx_to_ocr_item_full.get(original_yolo_idx_full)
-               if ocr_item_full and ocr_item_full.get("ocr_final_text") in VALID_OBU_CODES_CACHE:
-                   yolo_details_full = ocr_item_full.get("yolo_anchor_details")
-                   if yolo_details_full and det_rc_full.get("frame_r", -1) != -1 :
-                       current_frame_verified_obus_for_anchor.append({
-                           "text": ocr_item_full["ocr_final_text"], "physical_anchor": yolo_details_full,
-                           "ocr_confidence": ocr_item_full.get("ocr_confidence", 0.0),
-                           "original_yolo_idx": original_yolo_idx_full, "frame_r": det_rc_full["frame_r"]})
+            # 阶段一：预处理与净化
+            corrected_candidates = extract_and_correct_candidates(raw_text, logger)
+            if not corrected_candidates:
+                ocr_item['status'] = 'failed_extraction'
+                continue
 
-            y_anchor_info, estimated_row_y_for_drawing = layout_state_mgr.determine_y_axis_anchor(
-               current_frame_verified_obus_for_anchor, session["obu_evidence_pool"],
-               current_frame_layout_stats, session_id, current_frame_num, session_config)
-            session["status_flags"]["y_anchor_info_current_frame"] = y_anchor_info
-
-            if current_frame_num == 1 and y_anchor_info.get("is_first_frame_anchor_failed", False):
-                logger.error(f"{log_prefix} (整版模式)【行政规定检查失败】第一帧未能通过特殊行成功锚定！")
-                warnings_list.append({
-                    "message": "错误(整版模式)：第一帧未能识别到近端特殊行或锚定失败。",
-                    "code": "FIRST_FRAME_ANCHOR_FAILED_ADMIN_RULE"
-                })
-                timing_profile['4_layout_and_state'] = time.time() - t_step_layout
-                return final_matrix, final_texts, timing_profile, warnings_list, None, None
-
-            if y_anchor_info.get("is_skipped_due_to_no_overlap"):
-                warnings_list.append({ "message": "检测到可能的拍摄跳跃或漏帧(整版模式)。", "code": "FRAME_SKIPPED_NO_OVERLAP"})
-
-            session["layout_parameters"]["row_y_estimates"] = estimated_row_y_for_drawing
-
-            if config.SAVE_PROCESS_PHOTOS:
-                try:
-                    layout_state_mgr.draw_stable_layout_on_image(
-                        yolo_detections_with_rc, (img_w, img_h), session_id,
-                        current_frame_num, y_anchor_info, current_frame_layout_stats)
-                except Exception as e_draw_layout:
-                    logger.critical(f"{log_prefix} (整版模式) CRITICAL_LOG: 绘制单帧布局图时发生严重错误: {e_draw_layout}", exc_info=True)
-
-            if not y_anchor_info.get("is_skipped_due_to_no_overlap", False):
-                matrix_updated, texts_updated, warnings_state = layout_state_mgr.update_session_state_with_reference_logic(
-                   session, yolo_detections_with_rc, final_ocr_results_list,
-                   y_anchor_info, session_id, current_frame_num, session_config)
-                if warnings_state: warnings_list.extend(warnings_state)
-                final_matrix = matrix_updated; final_texts = texts_updated
-            else:
-                logger.warning(f"{log_prefix} (整版模式) 因漏帧，跳过核心状态更新。返回当前会话状态。")
-                final_matrix = session.get("logical_matrix", final_matrix)
-                final_texts = session.get("recognized_texts_map", final_texts)
-            timing_profile['4_layout_and_state'] = time.time() - t_step_layout
-            logger.info(f"{log_prefix} “整版识别”模式处理流程完成。")
-
-        else: # scattered_cumulative_ocr 模式
-            logger.info(f"{log_prefix} 执行“累积式零散识别”流程。")
-            t_step_scatter = time.time()
-
-            accumulated_obu_texts_set = set(session.get("accumulated_obu_texts_set", []))
-
-            current_frame_recognized_count = 0
-            final_recognized_texts_this_frame = set()
-
-            with CACHE_LOCK:
-                local_valid_codes = VALID_OBU_CODES_CACHE.copy()
-
-            for ocr_item in final_ocr_results_list:
-                raw_text = ocr_item.get("ocr_final_text", "").strip()
-
-                # 步骤1: 净化与标准化
-                candidate_text = raw_text
-                if config.ENABLE_OCR_CORRECTION and config.OCR_HEURISTIC_REPLACEMENTS:
-                    for char_to_replace, replacement in config.OCR_HEURISTIC_REPLACEMENTS.items():
-                        candidate_text = candidate_text.replace(char_to_replace, replacement)
-
-                candidate_text = "".join(re.findall(r'\d', candidate_text))
-                if len(candidate_text) != 16:
+            final_candidate = None
+            for cand in corrected_candidates:
+                # 阶段一，步骤1.4：身份初审
+                if cand not in local_valid_codes:
                     continue
 
-                # 步骤2: 精确匹配
-                if candidate_text in local_valid_codes:
-                    final_recognized_texts_this_frame.add(candidate_text)
-                    ocr_item['final_corrected_text'] = candidate_text
-                # 注意：我们在这里不再有else，因为我们已经抛弃了汉明距离
+                # 阶段二：核心裁决
+                if adjudicate_candidate(cand, analysis_context, logger):
+                    final_candidate = cand
+                    break # 只采纳第一个通过所有裁决的候选码
 
-            for text in final_recognized_texts_this_frame:
-                if text not in accumulated_obu_texts_set:
-                    current_frame_recognized_count += 1
-                accumulated_obu_texts_set.add(text)
+            if final_candidate:
+                if final_candidate not in evidence_pool:
+                    evidence_pool[final_candidate] = {"count": 0, "first_seen_frame": current_frame_num}
+                evidence_pool[final_candidate]["count"] += 1
+                evidence_pool[final_candidate]["last_seen_frame"] = current_frame_num
 
-            session["accumulated_obu_texts_set"] = accumulated_obu_texts_set
-            logger.info(f"{log_prefix} “累积式零散识别”：当前帧有效识别 {current_frame_recognized_count} 个, "
-                        f"累积总数 {len(accumulated_obu_texts_set)} 个。")
+                ocr_item['status'] = 'pending'
+                if evidence_pool[final_candidate]["count"] >= config.PROMOTION_THRESHOLD:
+                    ocr_item['status'] = 'confirmed'
+                ocr_item['final_corrected_text'] = final_candidate
+            else:
+                ocr_item['status'] = 'failed_adjudication'
 
-            if config.SAVE_TRAINING_ROI_IMAGES:
-                label_file_path = os.path.join(config.PROCESS_PHOTO_DIR, "training_rois", session_id, "label.txt")
-                with open(label_file_path, 'a', encoding='utf-8') as f:
-                    for ocr_item in final_ocr_results_list:
-                        # 我们只为那些最终被采纳的（即有'final_corrected_text'键）的OBU生成标签
-                        corrected_text = ocr_item.get('final_corrected_text')
-                        if corrected_text:
-                            roi_filename = f"f{current_frame_num}_yolo{ocr_item['original_index']}_h48_w320.png"
-                            f.write(f"{roi_filename}\t{corrected_text}\n")
+        session["evidence_pool"] = evidence_pool
 
-            if config.SAVE_PROCESS_PHOTOS:
-                annotated_img_full_size = draw_ocr_results_on_image(
-                    original_image, yolo_detections, final_ocr_results_list, local_valid_codes
-                )
-                if config.SAVE_SCATTERED_ANNOTATED_IMAGE:
-                    annotated_dir = os.path.join(config.PROCESS_PHOTO_DIR, "scattered_annotated")
-                    if not os.path.exists(annotated_dir): os.makedirs(annotated_dir, exist_ok=True)
-                    annotated_path = os.path.join(annotated_dir, f"annotated_s{session_id[:8]}_f{current_frame_num}.jpg")
-                    cv2.imwrite(annotated_path, annotated_img_full_size, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        # --- 生成返回结果 ---
+        confirmed_results_list = []
+        pending_results_list = []
 
-                try:
-                    target_w = config.SCATTERED_MODE_ANNOTATED_IMAGE_WIDTH
-                    orig_h_ann, orig_w_ann = annotated_img_full_size.shape[:2]
-                    scale_ann = target_w / orig_w_ann
-                    target_h_ann = int(orig_h_ann * scale_ann)
-                    resized_annotated_img = cv2.resize(annotated_img_full_size, (target_w, target_h_ann),
-                                                       interpolation=cv2.INTER_AREA if scale_ann < 1 else cv2.INTER_LINEAR)
-                    retval, buffer = cv2.imencode('.jpg', resized_annotated_img,
-                                                  [cv2.IMWRITE_JPEG_QUALITY, config.SCATTERED_MODE_IMAGE_JPG_QUALITY])
-                    if retval:
-                        annotated_image_base64_str = base64.b64encode(buffer).decode('utf-8')
-                except Exception as e_scatter_draw:
-                    logger.error(f"{log_prefix} 生成或编码缩小标注图时发生错误: {e_scatter_draw}", exc_info=True)
+        map_code_to_ocr_item = {
+            item['final_corrected_text']: item
+            for item in final_ocr_results_list if 'final_corrected_text' in item
+        }
 
-            scattered_results_list = [{"text": obu} for obu in sorted(list(accumulated_obu_texts_set))]
-            final_matrix = None; final_texts = None
-            timing_profile['4_scattered_processing'] = time.time() - t_step_scatter
-            logger.info(f"{log_prefix} “累积式零散识别”模式处理流程完成。")
+        for obu_code, evidence in sorted(evidence_pool.items()):
+            item_to_add = {"text": obu_code, "count": evidence["count"]}
+            if evidence["count"] >= config.PROMOTION_THRESHOLD:
+                confirmed_results_list.append(item_to_add)
+            else:
+                ocr_item_ref = map_code_to_ocr_item.get(obu_code)
+                if ocr_item_ref:
+                    item_to_add['box'] = ocr_item_ref.get('bbox_yolo_abs')
+                pending_results_list.append(item_to_add)
 
-        if config.SAVE_PROCESS_PHOTOS and yolo_detections and mode == 'full_layout' and final_texts is not None:
-            t_step_draw_yolo_final = time.time()
-            ocr_texts_for_final_draw = {
-                ocr_item.get("original_index"): ocr_item.get("ocr_final_text")
-                for ocr_item in final_ocr_results_list
-                if ocr_item and ocr_item.get("ocr_final_text") in VALID_OBU_CODES_CACHE
-            }
-            annotated_img_final = draw_yolo_detections_on_image(
-                original_image, yolo_detections, ocr_texts_for_final_draw, config.YOLO_COCO_CLASSES)
-            img_name_base_final = os.path.splitext(os.path.basename(image_path))[0]
-            ts_filename_final = datetime.now().strftime("%Y%m%d%H%M%S%f")
-            annotated_path_final = os.path.join(config.PROCESS_PHOTO_DIR, f"annotated_{img_name_base_final}_s{session_id[:8]}_f{current_frame_num}_{ts_filename_final}.jpg")
+        logger.info(f"{log_prefix} 证据累积完成。确信: {len(confirmed_results_list)} 个, "
+                    f"待定: {len(pending_results_list)} 个。")
+
+        # --- 生成标注图与训练数据 ---
+        if config.SAVE_PROCESS_PHOTOS:
+            annotated_img_full_size = draw_ocr_results_on_image(
+                original_image, yolo_detections, final_ocr_results_list
+            )
+            if config.SAVE_SCATTERED_ANNOTATED_IMAGE:
+                annotated_dir = os.path.join(config.PROCESS_PHOTO_DIR, "scattered_annotated")
+                if not os.path.exists(annotated_dir): os.makedirs(annotated_dir, exist_ok=True)
+                annotated_path = os.path.join(annotated_dir, f"annotated_s{session_id[:8]}_f{current_frame_num}.jpg")
+                cv2.imwrite(annotated_path, annotated_img_full_size, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
             try:
-                cv2.imwrite(annotated_path_final, annotated_img_final, [cv2.IMWRITE_JPEG_QUALITY, config.PROCESS_PHOTO_JPG_QUALITY])
-            except Exception as e_save_ann_final: logger.error(f"{log_prefix} 保存最终YOLO标注图失败: {e_save_ann_final}", exc_info=True)
-            timing_profile['5_drawing_final_annotation'] = time.time() - t_step_draw_yolo_final
+                target_w = config.SCATTERED_MODE_ANNOTATED_IMAGE_WIDTH
+                orig_h_ann, orig_w_ann = annotated_img_full_size.shape[:2]
+                scale_ann = target_w / orig_w_ann
+                target_h_ann = int(orig_h_ann * scale_ann)
+                resized_annotated_img = cv2.resize(annotated_img_full_size, (target_w, target_h_ann),
+                                                   interpolation=cv2.INTER_AREA if scale_ann < 1 else cv2.INTER_LINEAR)
+                retval, buffer = cv2.imencode('.jpg', resized_annotated_img,
+                                                  [cv2.IMWRITE_JPEG_QUALITY, config.SCATTERED_MODE_IMAGE_JPG_QUALITY])
+                if retval:
+                    annotated_image_base64_str = base64.b64encode(buffer).decode('utf-8')
+            except Exception as e_scatter_draw:
+                logger.error(f"{log_prefix} 生成或编码缩小标注图时发生错误: {e_scatter_draw}", exc_info=True)
+
+        if config.SAVE_TRAINING_ROI_IMAGES:
+            session_training_roi_dir = os.path.join(config.PROCESS_PHOTO_DIR, "training_rois", session_id)
+            if not os.path.exists(session_training_roi_dir):
+                os.makedirs(session_training_roi_dir, exist_ok=True)
+            label_file_path = os.path.join(session_training_roi_dir, "label.txt")
+            with open(label_file_path, 'a', encoding='utf-8') as f:
+                for ocr_item in final_ocr_results_list:
+                    corrected_text = ocr_item.get('final_corrected_text')
+                    if corrected_text:
+                        roi_filename = f"f{current_frame_num}_yolo{ocr_item['original_index']}_h{config.OCR_TARGET_INPUT_HEIGHT}_w320.png"
+                        f.write(f"{roi_filename}\t{corrected_text}\n")
+
+        timing_profile['4_adjudication_processing'] = time.time() - t_step_adjudication
 
     except Exception as e:
         logger.error(f"{log_prefix} 处理图片时发生未知严重错误: {e}", exc_info=True)
@@ -322,29 +377,41 @@ def process_image_with_ocr_logic(
     logger.info(f"{log_prefix} --- Timing profile for {os.path.basename(image_path)} ---")
     for key, val in sorted(timing_profile.items()): logger.info(f"  {key}: {val:.3f}s")
 
-    return final_matrix, final_texts, timing_profile, warnings_list, scattered_results_list, annotated_image_base64_str
+    return confirmed_results_list, pending_results_list, timing_profile, warnings_list, annotated_image_base64_str
 
-# app.py (Continued - Part 3 - Final)
+# --- 新增：会话清理线程 ---
+def cleanup_expired_sessions():
+    """定期清理过期的会话数据以释放内存。"""
+    while True:
+        time.sleep(SESSION_CLEANUP_INTERVAL.total_seconds())
+        with CACHE_LOCK: # 使用锁确保线程安全
+            now = datetime.now()
+            expired_sessions = [
+                sid for sid, sdata in session_data_store.items()
+                if now - sdata.get("last_activity", now) > SESSION_CLEANUP_INTERVAL
+            ]
+            if expired_sessions:
+                app.logger.info(f"会话清理：准备移除 {len(expired_sessions)} 个过期会话。")
+                for sid in expired_sessions:
+                    del session_data_store[sid]
+                app.logger.info(f"会话清理：完成。当前活动会话数: {len(session_data_store)}")
 
 # --- 新增：数据缓存刷新接口 ---
 @app.route('/refresh-cache', methods=['POST'])
 def refresh_cache_route():
     logger = current_app.logger
-
     provided_key = request.headers.get('X-API-KEY')
     if provided_key != config.REFRESH_API_KEY:
         logger.warning("检测到无效的API Key，拒绝缓存刷新请求。")
         return jsonify({"error": "Invalid or missing API Key"}), 403
 
     logger.info("接收到缓存刷新请求，开始从数据库同步数据...")
-
     global VALID_OBU_CODES_CACHE, db_handler
     if not db_handler:
         logger.error("数据库处理器未初始化，无法刷新缓存。")
         return jsonify({"error": "Database handler not initialized"}), 500
 
     new_data = db_handler.load_valid_obus()
-
     if new_data is not None:
         with CACHE_LOCK:
             VALID_OBU_CODES_CACHE = new_data
@@ -354,134 +421,100 @@ def refresh_cache_route():
         logger.error("从数据库加载数据失败，缓存未更新。")
         return jsonify({"error": "Failed to load data from database"}), 500
 
+# --- 新增：会话终审接口 ---
+@app.route('/session/finalize', methods=['POST'])
+def finalize_session_route():
+    logger = current_app.logger
+    data = request.get_json()
+    if not data or 'session_id' not in data:
+        logger.error("终审请求中缺少 'session_id'。")
+        return jsonify({"error": "session_id is required in JSON body"}), 400
 
-# --- Flask 路由 ---
+    session_id = data['session_id']
+    logger.info(f"会话 {session_id}: 接收到终审请求。")
+
+    with CACHE_LOCK:
+        session = session_data_store.get(session_id)
+
+    if not session:
+        logger.warning(f"会话 {session_id}: 未找到会话数据，无法进行终审。")
+        return jsonify({"error": "Session not found", "session_id": session_id}), 404
+
+    evidence_pool = session.get("evidence_pool", {})
+    # 在终审时，我们将所有被目击过的OBU（无论次数）都视为最终结果
+    final_results = [{"text": obu, "count": evi["count"]} for obu, evi in evidence_pool.items()]
+    final_results_sorted = sorted(final_results, key=lambda x: x['text'])
+
+    # （可选）在终审后可以清理会话以释放内存
+    with CACHE_LOCK:
+        if session_id in session_data_store:
+            del session_data_store[session_id]
+            logger.info(f"会话 {session_id}: 终审完成并已清理。")
+            print("="*80)
+
+    response_data = {
+        "message": "Session finalized successfully.",
+        "session_id": session_id,
+        "total_count": len(final_results_sorted),
+        "final_results": final_results_sorted
+    }
+    return jsonify(response_data), 200
+
+# --- Flask 路由 (核心识别接口) ---
 @app.route('/predict', methods=['POST'])
 def predict_image_route():
     logger = current_app.logger
-
     session_id = request.form.get('session_id')
     if not session_id:
         logger.error("请求中缺少 'session_id'。")
         return jsonify({"error": "session_id is required"}), 400
 
-    mode = request.form.get('mode', 'scattered_cumulative_ocr').lower()
-    if mode not in ['full_layout', 'scattered_cumulative_ocr']:
-        logger.warning(f"会话 {session_id}: 无效的处理模式 '{mode}'，将使用默认 'scattered_cumulative_ocr'。")
-        mode = 'scattered_cumulative_ocr'
-
-    force_recalibrate_str = request.form.get('force_recalibrate', 'false').lower()
-    force_recalibrate = (force_recalibrate_str == 'true') if mode == 'full_layout' else False
-
     if 'file' not in request.files:
-        logger.warning(f"会话 {session_id}: 请求中未找到文件部分。")
-        return jsonify({"error": "No file part in the request", "session_id": session_id}), 400
+        return jsonify({"error": "No file part in the request"}), 400
     file = request.files['file']
-    if file.filename == '':
-        logger.warning(f"会话 {session_id}: 未选择文件。")
-        return jsonify({"error": "No selected file", "session_id": session_id}), 400
-    if not (file and allowed_file(file.filename)):
-        logger.warning(f"会话 {session_id}: 文件类型不允许: {file.filename}")
-        return jsonify({"error": "File type not allowed", "session_id": session_id}), 400
+    if file.filename == '' or not allowed_file(file.filename):
+        return jsonify({"error": "Invalid or missing file"}), 400
 
     original_filename_for_log = secure_filename(file.filename)
 
     try:
+        with CACHE_LOCK:
+            if session_id not in session_data_store:
+                logger.info(f"会话 {session_id}: 新建会话。")
+                session_data_store[session_id] = {
+                    "evidence_pool": {},
+                    "frame_count": 0,
+                    "last_activity": datetime.now(),
+                }
+            session = session_data_store[session_id]
+
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         name, ext = os.path.splitext(original_filename_for_log)
-
-        session = session_data_store.get(session_id)
-        is_new_session_or_recalibrate = False
-
-        if not session or (mode == 'full_layout' and force_recalibrate):
-            is_new_session_or_recalibrate = True
-            log_msg_session = f"会话 {session_id} (模式: {mode}): "
-            if mode == 'full_layout' and force_recalibrate and session:
-                log_msg_session += "用户触发强制重新校准。"
-            else:
-                log_msg_session += "新建会话或首次处理。"
-            logger.info(log_msg_session)
-
-            current_layout_config_for_session = {
-                "expected_total_rows": config.LAYOUT_EXPECTED_TOTAL_ROWS,
-                "regular_rows_count": config.LAYOUT_REGULAR_ROWS_COUNT,
-                "regular_cols_count": config.LAYOUT_REGULAR_COLS_COUNT,
-                "special_row_cols_count": config.LAYOUT_SPECIAL_ROW_COLS_COUNT,
-                "total_obus": config.LAYOUT_TOTAL_OBUS_EXPECTED
-            }
-            initial_matrix = [[0] * current_layout_config_for_session["regular_cols_count"]
-                              for _ in range(current_layout_config_for_session["expected_total_rows"])]
-
-            session_data_store[session_id] = {
-                "accumulated_obu_texts_set": set(),
-                "logical_matrix": initial_matrix,
-                "recognized_texts_map": {},
-                "obu_evidence_pool": {},
-                "layout_parameters": {"is_calibrated": False, "row_y_estimates": [] },
-                "stable_layout_parameters": None,
-                "current_layout_config": current_layout_config_for_session,
-                "frame_count": 0,
-                "last_activity": datetime.now(),
-                "status_flags": {
-                    "frame_skipped_due_to_no_overlap": False,
-                    "y_anchor_info_current_frame": None,
-                }}
-        session = session_data_store[session_id]
-
-        frame_num_for_filename = session.get("frame_count",0) + 1
+        frame_num_for_filename = session.get("frame_count", 0) + 1
         filename_on_server = f"s{session_id[:8]}_f{frame_num_for_filename}_{name}_{timestamp}{ext}"
         upload_path = os.path.join(config.UPLOAD_FOLDER, filename_on_server)
         if not os.path.exists(config.UPLOAD_FOLDER):
             os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
         file.save(upload_path)
-        logger.info(f"会话 {session_id}: 文件 '{filename_on_server}' 已成功保存到 '{upload_path}'")
 
-
-        matrix_res, texts_res, timings_res, warnings_res, scattered_res, base64_img_res = \
+        confirmed_res, pending_res, timings_res, warnings_res, base64_img_res = \
             process_image_with_ocr_logic(
-                upload_path, session_id, logger, mode=mode
+                upload_path, session_id, logger
             )
 
         response_data = {
             "message": "File processed successfully.",
             "session_id": session_id,
             "received_filename": original_filename_for_log,
-            "mode_processed": mode,
             "timing_profile_seconds": timings_res,
-            "warnings": warnings_res
+            "warnings": warnings_res,
+            "confirmed_results": confirmed_res,
+            "pending_results": pending_res,
+            "current_frame_annotated_image_base64": base64_img_res,
+            "session_status": "in_progress"
         }
 
-        current_session_status = "unknown"
-        session_after_process = session_data_store.get(session_id)
-
-        if mode == 'full_layout':
-            response_data["obu_status_matrix"] = matrix_res
-            response_data["obu_texts"] = {f"{r}_{c}": text for (r,c), text in texts_res.items()} if texts_res else {}
-
-            num_identified = sum(1 for r_val in matrix_res for status in r_val if status == 1) if matrix_res else 0
-            total_expected = config.LAYOUT_TOTAL_OBUS_EXPECTED
-            if session_after_process and "current_layout_config" in session_after_process:
-                 total_expected = session_after_process["current_layout_config"].get("total_obus", total_expected)
-
-            y_anchor_info_final = session_after_process.get("status_flags",{}).get("y_anchor_info_current_frame") if session_after_process else None
-            current_frame_processed_num = session_after_process.get("frame_count", 0) if session_after_process else 0
-
-            if current_frame_processed_num == 1 and y_anchor_info_final and y_anchor_info_final.get("is_first_frame_anchor_failed", False) :
-                current_session_status = "first_frame_anchor_error"
-            elif num_identified >= total_expected:
-                current_session_status = "completed"
-            else:
-                current_session_status = "in_progress"
-            response_data["session_status"] = current_session_status
-            logger.info(f"会话 {session_id} (整版模式): 已识别 {num_identified}/{total_expected} 个OBU。状态: {current_session_status}")
-
-        elif mode == 'scattered_cumulative_ocr':
-            response_data["accumulated_results"] = scattered_res
-            response_data["current_frame_annotated_image_base64"] = base64_img_res
-            current_session_status = "scattered_recognition_in_progress"
-            response_data["session_status"] = current_session_status
-            logger.info(f"会话 {session_id} (累积零散模式): 返回 {len(scattered_res if scattered_res else [])} 个累积OBU。")
-
+        logger.info(f"会话 {session_id}: 处理完成。确信: {len(confirmed_res or [])}, 待定: {len(pending_res or [])}")
         return jsonify(response_data), 200
 
     except Exception as e:
@@ -490,23 +523,17 @@ def predict_image_route():
 
 # --- 应用初始化与启动 ---
 def initialize_global_handlers(app_logger):
-    global yolo_predictor, ocr_predictor, layout_state_mgr, db_handler, VALID_OBU_CODES_CACHE
+    global yolo_predictor, ocr_predictor, db_handler, VALID_OBU_CODES_CACHE
     app_logger.info("--- 开始初始化全局处理器 ---")
     try:
-        # 1. 初始化数据库处理器
         db_handler = DatabaseHandler(logger=app_logger)
-
-        # 2. 启动时加载初始OBU码到缓存
         initial_obus = db_handler.load_valid_obus()
         if initial_obus is not None:
             with CACHE_LOCK:
                 VALID_OBU_CODES_CACHE = initial_obus
         else:
-            app_logger.error("启动时从数据库加载OBU码失败！服务将无法正常工作。正在终止...")
-            # 根据您的要求，在初始化失败时终止服务
             raise RuntimeError("Failed to load initial OBU codes from database.")
 
-        # 3. 初始化模型处理器
         yolo_predictor = YoloHandler(
             model_path=config.ONNX_MODEL_PATH,
             conf_threshold=config.YOLO_CONFIDENCE_THRESHOLD,
@@ -524,19 +551,7 @@ def initialize_global_handlers(app_logger):
             digit_roi_height_factor=config.OCR_DIGIT_ROI_HEIGHT_FACTOR,
             digit_roi_width_expand_factor=config.OCR_DIGIT_ROI_WIDTH_EXPAND_FACTOR,
             logger=app_logger)
-        layout_state_mgr = LayoutStateManager(
-            config_params={
-                "LAYOUT_EXPECTED_TOTAL_ROWS": config.LAYOUT_EXPECTED_TOTAL_ROWS,
-                "LAYOUT_REGULAR_COLS_COUNT": config.LAYOUT_REGULAR_COLS_COUNT,
-                "LAYOUT_SPECIAL_ROW_COLS_COUNT": config.LAYOUT_SPECIAL_ROW_COLS_COUNT,
-                "LAYOUT_MIN_CORE_ANCHORS_FOR_STATS": config.LAYOUT_MIN_CORE_ANCHORS_FOR_STATS,
-                "LAYOUT_Y_AXIS_GROUPING_PIXEL_THRESHOLD": config.LAYOUT_Y_AXIS_GROUPING_PIXEL_THRESHOLD,
-                "LAYOUT_X_AXIS_GROUPING_PIXEL_THRESHOLD": config.LAYOUT_X_AXIS_GROUPING_PIXEL_THRESHOLD,
-                "PROCESS_PHOTO_DIR": config.PROCESS_PHOTO_DIR,
-                "IMAGE_FALLBACK_HEIGHT_FOR_LAYOUT": 5712,
-                "avg_obu_h": 40.0,
-                "avg_obu_w": 100.0
-            }, logger=app_logger)
+
         app_logger.info("--- 全局处理器初始化完成 ---")
     except Exception as e:
         app_logger.critical(f"全局处理器初始化失败: {e}", exc_info=True)
@@ -547,11 +562,9 @@ def cleanup_on_exit():
     if ocr_predictor and hasattr(ocr_predictor, 'close_pool'):
         print("应用退出，正在关闭OCR处理池...")
         ocr_predictor.close_pool()
-        print("OCR处理池已关闭。")
     if db_handler and hasattr(db_handler, 'close_pool'):
         print("应用退出，正在关闭数据库连接池...")
         db_handler.close_pool()
-        print("数据库连接池已关闭。")
 
 if __name__ == '__main__':
     setup_logging(app)
@@ -563,9 +576,13 @@ if __name__ == '__main__':
 
     atexit.register(cleanup_on_exit)
 
+    # 启动后台会话清理线程
+    cleanup_thread = threading.Thread(target=cleanup_expired_sessions, daemon=True)
+    cleanup_thread.start()
+    app.logger.info("后台会话清理线程已启动。")
+
     if not os.path.exists(config.UPLOAD_FOLDER): os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
     if not os.path.exists(config.PROCESS_PHOTO_DIR): os.makedirs(config.PROCESS_PHOTO_DIR, exist_ok=True)
 
     app.logger.info(f"服务版本 {config.APP_VERSION} 启动中... 使用生产级服务器 Waitress。")
-
     serve(app, host='0.0.0.0', port=5000)

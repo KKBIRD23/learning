@@ -39,17 +39,25 @@ def init_ocr_worker_process(onnx_model_path: str, keys_path: str):
         _worker_char_dict = None
 
 def _ctc_greedy_decoder(preds: np.ndarray, char_dict: List[str]) -> str:
-    """简单的CTC贪心解码器。"""
+    """简单的CTC贪心解码器 (V8.1 健壮版)。"""
     preds_indices = np.argmax(preds, axis=2)
     result = []
     last_index = 0 # 初始化为blank的索引
+    char_dict_len = len(char_dict)
+
     for i in range(preds_indices.shape[1]):
         idx = preds_indices[0][i]
-        # --- 核心修正点 2: 正确处理 blank ---
+
+        # 【核心修正】增加安全检查，防止模型在处理异常输入时返回越界索引
+        if idx >= char_dict_len:
+            # 如果索引超出字典范围，直接忽略这个预测，保证程序不崩溃
+            continue
+
         # 如果当前索引不是 blank (索引0)，并且不与上一个字符重复，则添加
         if idx != 0 and idx != last_index:
             result.append(char_dict[idx])
         last_index = idx
+
     return "".join(result)
 
 def ocr_task_for_worker_process(task_data_tuple: Tuple[int, np.ndarray, Tuple[int, int]]) -> Tuple[int, Dict[str, Any]]:

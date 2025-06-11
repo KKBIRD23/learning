@@ -1,24 +1,19 @@
-# config.py
+# config.py (V18.1_Final_Adjudication)
 
 import os
 
 # --- 基础路径配置 ---
-BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) # 假设app.py在Service目录下
+BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 # --- 模型路径 ---
 ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "BarCode_Detect", "Barcode_dynamic-True_half-False.onnx")
 OCR_ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "PP-OCRv5_server_rec_onnx", "inference.onnx")
 OCR_KEYS_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "PP-OCRv5_server_rec_onnx", "keys.txt")
 
-
-
-
-
-# ==================启发式规则配置区==========================
-# 步骤1：启发式替换规则。在进行匹配前，会将key替换为value。
-# 是否启用OCR启发式纠错功能
+# ================== 核心裁决引擎配置 (V18.1) ==================
+# --- 预处理与净化 ---
 ENABLE_OCR_CORRECTION = True
-
+# 这个列表现在应该更保守，只包含高置信度的替换
 OCR_HEURISTIC_REPLACEMENTS = {
     'S': '5',
     'B': '8',
@@ -26,87 +21,100 @@ OCR_HEURISTIC_REPLACEMENTS = {
     'O': '0',
     'D': '0',
     'Z': '2',
-    'G': '6'
+    'G': '6',
+    'Q': '0'
 }
-# ==================启发式规则配置区==========================
 
-# ==================数据库配置===============================
+# --- 可配置头部修正 ---
+ENABLE_HEADER_CORRECTION = True
+CORRECTION_HEADER_PREFIX = "5001" # 您指定的、唯一可以确信的头部规则
+
+# --- 证据晋升与会话管理 ---
+PROMOTION_THRESHOLD = 2      # OBU被确信所需的最低目击次数,当设置为1时相当于关闭确信模式直接信任
+SESSION_CLEANUP_HOURS = 24   # 会话数据在内存中保留的小时数
+
+# --- 证据晋升与会话管理 ---
+PROMOTION_THRESHOLD = 2
+SESSION_CLEANUP_HOURS = 24
+
+# --- 动态批次验证器 ---
+# a. “满溢纯净”规则
+PURITY_CHECK_THRESHOLD = 50 # 触发“满溢纯净”规则所需的OBU数量
+
+# b. “三点定位”与“汉明裁决”
+# 汉明距离计算的开关
+ENABLE_HAMMING_CHECK = True
+# 汉明距离裁决的阈值，小于等于此值则通过
+HAMMING_THRESHOLD = 1
+# 形成一个有效号段所需的最少连号数
+MIN_SEGMENT_MEMBERS = 3
+# 定义号段“断裂点”的间距阈值，大于此值则认为属于不同号段
+SEGMENT_GAP_THRESHOLD = 5
+# “三点定位”法中，以中间值为中心，向两边扩展的范围
+GUESS_RANGE = 48
+
+# c. “混沌安全阀”
+# 当识别出的独立号段数量超过此值，则判定为“混沌模式”，自动跳过汉明裁决
+MAX_SEGMENTS_THRESHOLD = 5
+# ============================================================
+
+# ================== 数据库配置 ==============================
 DB_USERNAME = "VFJ_CQGS"
 DB_PASSWORD = "vfj_20231007"
-# Oracle的连接描述符(DSN)
 DB_DSN = "192.168.1.200:1521/ORCL"
-# 要查询的表名和列名
-DB_TABLE_NAME = "SINGCHIPOBU"  # <--- 【请您将这里替换为真实的表名】
-DB_COLUMN_NAME = "OBUSAMSERIALNO" # <--- 【请您将这里替换为真实的列名】
+DB_TABLE_NAME = "SINGCHIPOBU"
+DB_COLUMN_NAME = "OBUSAMSERIALNO"
 
 # --- 安全与同步配置 ---
-# 用于保护 /refresh-cache 接口的API密钥
-REFRESH_API_KEY = "Vfj@1234.wq" # 建议您后续修改为一个更复杂的密钥
-# ==================数据库配置================================
+REFRESH_API_KEY = "Vfj@1234.wq"
+# ============================================================
 
 # --- Flask 应用配置 ---
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
-MAX_CONTENT_LENGTH = 16 * 1024 * 1024 # 16MB
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024
 
 # --- 日志配置 ---
+LOG_LEVEL = "DEBUG" # 可选值: "DEBUG", "INFO", "WARNING", "ERROR"
 LOG_DIR = "log"
 LOG_FILE = "app.log"
-LOG_FILE_MAX_BYTES = 10 * 1024 * 1024 # 10MB
-LOG_FILE_BACKUP_COUNT = 5
+LOG_FILE_MAX_BYTES = 50 * 1024 * 1024   # 日志大小为50MB，超过就会新生成一个文件
+LOG_FILE_BACKUP_COUNT = 5   # 保留5个备份日志文件，超过就会删除最旧的文件
 
 # --- YOLOv8 配置 ---
 YOLO_CONFIDENCE_THRESHOLD = 0.25
 YOLO_IOU_THRESHOLD = 0.45
-YOLO_MIN_DETECTION_AREA_PX = 2000  # 最小检测面积（像素）
-YOLO_MAX_DETECTION_AREA_FACTOR = 0.1 # 最大检测面积占图像总面积的比例 (0.0 to 1.0)
-YOLO_COCO_CLASSES = ['Barcode'] # 假设模型只检测一个类别
+YOLO_MIN_DETECTION_AREA_PX = 2000
+YOLO_MAX_DETECTION_AREA_FACTOR = 0.1
+YOLO_COCO_CLASSES = ['Barcode']
 
 # --- OCR 配置 ---
 OCR_TARGET_INPUT_HEIGHT = 48
-OCR_DIGIT_ROI_Y_OFFSET_FACTOR = -0.15 # 数字区域相对于YOLO框顶部的Y偏移因子
-OCR_DIGIT_ROI_HEIGHT_FACTOR = 0.7     # 数字区域高度相对于YOLO框高度的因子
-OCR_DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05 # 数字区域宽度扩展因子
-OCR_NUM_WORKERS = 4 # 并行OCR工作进程数 (0或1表示串行)
-SAVE_TRAINING_ROI_IMAGES = True     # 是否保存在训练模式下使用的ROI切片 (预处理后，送入OCR前)
+OCR_DIGIT_ROI_Y_OFFSET_FACTOR = -0.15
+OCR_DIGIT_ROI_HEIGHT_FACTOR = 0.7
+OCR_DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05
+OCR_NUM_WORKERS = 4
+SAVE_TRAINING_ROI_IMAGES = True
 
-# --- 布局与状态管理配置 ---
+# --- 布局与状态管理配置 (当前主要用于调试图保存路径) ---
 LAYOUT_EXPECTED_TOTAL_ROWS = 13
-LAYOUT_REGULAR_ROWS_COUNT = 12 # 逻辑上的常规行数 (不含特殊行)
+LAYOUT_REGULAR_ROWS_COUNT = 12
 LAYOUT_REGULAR_COLS_COUNT = 4
-LAYOUT_SPECIAL_ROW_COLS_COUNT = 2 # 特殊行期望的列数
-LAYOUT_TOTAL_OBUS_EXPECTED = 50 # 用于判断会话是否完成
+LAYOUT_SPECIAL_ROW_COLS_COUNT = 2
+LAYOUT_TOTAL_OBUS_EXPECTED = 50
+LAYOUT_Y_AXIS_GROUPING_PIXEL_THRESHOLD = 50
+LAYOUT_X_AXIS_GROUPING_PIXEL_THRESHOLD = 400
+LAYOUT_MIN_CORE_ANCHORS_FOR_STATS = 3
+VALID_OBU_CODES = {} # 为兼容旧模块导入而保留
 
-# 用于 _analyze_layout_by_xy_clustering 的【固定像素距离】阈值
-# 您需要根据实际OBU在图像中的像素间距来调整这些初始值
-# 例如，如果同一行的OBU在Y方向上通常偏差在20像素内，那么Y_THRESHOLD可以设为25-30
-# 如果同一列的OBU在X方向上通常偏差在80像素内，那么X_THRESHOLD可以设为90-100
-LAYOUT_Y_AXIS_GROUPING_PIXEL_THRESHOLD = 50  # Y轴方向上被认为是同一行的最大像素距离差 (建议值，请调整)
-LAYOUT_X_AXIS_GROUPING_PIXEL_THRESHOLD = 400 # X轴方向上被认为是同一列的最大像素距离差 (建议值，请调整)
-
-# 首次布局学习相关阈值 (来自 learn_initial_layout_from_yolo_v81 或类似函数的常量)
-LAYOUT_MIN_CORE_ANCHORS_FOR_LEARNING = 5
-
-# 用于 _learn_initial_stable_layout_params (现在主要是统计)
-LAYOUT_MIN_CORE_ANCHORS_FOR_STATS = 3 # 用于统计稳定参数的最小锚点数 (替代之前的LEARNING)
-
-# --- 过程图片保存 ---
-SAVE_PROCESS_PHOTOS = True
 PROCESS_PHOTO_DIR = "process_photo"
-PROCESS_PHOTO_JPG_QUALITY = 65  # 过程JPEG图片质量 (0-100, 100为最高质量)
+SAVE_PROCESS_PHOTOS = True
+PROCESS_PHOTO_JPG_QUALITY = 65
 
-# --- 新增：零散识别模式配置 ---
-SCATTERED_MODE_ANNOTATED_IMAGE_WIDTH = 600 # 零散模式下返回的标注图宽度 (像素)
-SCATTERED_MODE_IMAGE_JPG_QUALITY = 75    # 零散模式下返回的标注图JPEG质量
-
-# --- 新增：高级标注与物料生成配置 ---
-# 是否保存带有半透明颜色标注的原尺寸诊断图
+# --- 零散识别模式配置 ---
+SCATTERED_MODE_ANNOTATED_IMAGE_WIDTH = 600
+SCATTERED_MODE_IMAGE_JPG_QUALITY = 75
 SAVE_SCATTERED_ANNOTATED_IMAGE = True
 
-# --- 有效OBU码列表 (模拟数据库) ---
-VALID_OBU_CODES = {
-
-}
-
 # --- 版本号 ---
-APP_VERSION = "v4.0_Optimized_Engine"
+APP_VERSION = "v18.1_Final"

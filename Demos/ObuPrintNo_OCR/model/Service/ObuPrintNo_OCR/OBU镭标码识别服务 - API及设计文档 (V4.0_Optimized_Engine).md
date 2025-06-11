@@ -1,274 +1,263 @@
+## OBU镭标码识别服务 - API及设计文档 (V8.0_Final)
 
-## OBU镭标码识别服务 - API及设计文档(V4.0_Optimized_Engine)
+**版本**: v8.0_Final_Engine
 
-**版本**: v4.0_Optimized_Engine
-
-**核心成就**: 在V3.4版本的基础上，通过一系列精密的模型选型、引擎切换和算法优化，实现了 **超过10倍的性能提升**（单次OCR处理从10s优化至1s内），并最终达到了 **100%的识别准确率**。
+**核心理念**: **回归纯粹，精准打击。** 本版本彻底摒弃了所有有风险的“下游治理”逻辑，通过实现**精准提取**和**规则修正**的核心算法，从源头上保证识别的准确性。同时，引入了创新的**“实时高可信 + 会话终审”**架构，在提供极致准确性的同时，兼顾了生产操作的灵活性与人性化。
 
 ### 1. 项目概述与目标
 
-*   **项目名称**: OBU镭标码智能识别与矩阵管理系统 (当前阶段聚焦于服务端识别核心)
-*   **核心目标**: 提供一个能够接收OBU设备图片，并通过YOLO目标检测和OCR文字识别，提取图片中所有OBU镭标码的服务。
-*   **当前版本主要功能**:
-    - **高效累积式零散识别**: 用户可连续上传多张图片，服务端会以极高的速度识别并累积所有OBU码。
-    - **专家纠错系统**: 内置一套基于业务规则和汉明距离的、可配置的智能纠错引擎，能自动修正OCR的微小错误，极大提升了系统的鲁棒性和准确率。
-    - **优化的视觉反馈**: 为客户端提供带有半透明高亮色块的“战况缩略图”，直观区分识别成功与失败的区域。
-    - **自动化训练物料生成**: 在生产过程中，可自动生成高质量的、可直接用于模型微调的标注数据。
+- 
+- **项目名称**: OBU镭标码高鲁棒性识别与证据管理系统
+- **核心目标**: 提供一个能够应对各种复杂、无序场景（如新旧混装、非连续号段）的OBU镭标码识别服务。
+- **V8.0版本核心功能**:
+  - **精准提取引擎**: 彻底抛弃有风险的全局数字提取，采用基于“连续16位字串”原则的精准提取算法。
+  - **可配置规则修正**: 集成了可配置的“头部修正”和“启发式字符替换”规则，将业务知识与算法完美结合。
+  - **证据累积与晋升机制**: 对每一次识别结果进行“目击次数”累积，不再“一票否决”或“一票通过”。
+  - **双阶API架构**:
+    - /predict: 提供实时的、包含“确信”和“待定”分类的高质量反馈，智能引导操作。
+    - /session/finalize: 在会话结束时，提供包含所有潜在识别结果的、最完整的终审报告。
+  - **后台数据热更新**: 提供带安全密钥的/refresh-cache接口，可随时从数据库同步最新的OBU码列表，无需重启服务。
 
 ### 2. 系统架构简图
 
 ```mermaid
-graph LR
-    A[客户端 Client] --> B[服务端 Waitress + Flask]
-    B --> C[YOLOv8 ONNX Handler]
-    B --> D[PP-OCRv4 ONNX Handler]
-    B --> E[会话数据存储]
-    B --> F[专家纠错引擎]
-    B --> A
-
-    A -- "图片文件 + 会话ID" --> B
-    B -- "目标检测" --> C
-    B -- "文字识别" --> D
-    D -- "原始识别结果" --> F
-    F -- "修正后结果" --> E
-    B -- "JSON响应 + Base64图像" --> A
-
-    subgraph 服务端
-        B
-        C
-        D
-        E
-        F
-        G[config.py]
-        H[image_utils.py]
-    end
-
-    classDef server fill:#f9f9f9,stroke:#333;
-    class 服务端 server;
-```
-*   **说明**:
-    *   客户端通过HTTP POST请求将图片和会话ID发送到服务端。
-    *   服务端`app.py`作为主控制器，协调`YoloHandler`进行目标检测，`OcrHandler`进行文字识别。
-    *   识别结果在会话数据存储中进行累积（当前为内存字典）。
-    *   服务端返回包含累积结果和当前帧标注图的JSON响应。
-    *   `config.py`提供所有配置参数。
-    *   `image_utils.py`提供图像处理工具。
-    *   `layout_and_state_manager.py`中与“整版识别”相关的复杂逻辑在当前版本被“冻结”，不参与“累积式零散识别”模式的核心流程。
-
-### 3. 核心功能模块说明
-
-*   **`app.py`**:
-    *   Flask应用入口，定义API接口 (`/predict`)。
-    *   负责接收客户端请求，管理会话（创建、获取、更新）。
-    *   编排核心处理流程 `process_image_with_ocr_logic`。
-    *   根据处理模式（当前固定为“累积式零散识别”）调用相应模块。
-    *   构造并返回JSON响应。
-*   **`yolo_handler.py` (`YoloHandler` 类)**:
-    *   封装YOLOv8模型的加载、图像预处理、推理和后处理。
-    *   输出：检测到的OBU边界框列表及其置信度。
-*   **`ocr_handler.py` (`OcrHandler` 类)**:
-    *   封装OCR模型的加载和并行/串行识别。
-    *   负责从YOLO检测框中裁剪ROI、进行OCR预处理、调用OCR引擎识别文本、整合结果。
-    *   （新增）支持按需保存用于训练的预处理后ROI图像。
-*   **`image_utils.py`**:
-    *   提供通用的图像处理函数，如图像读取、裁剪、绘制标注等。
-*   **`config.py`**:
-    *   集中管理所有可配置参数，如模型路径、阈值、保存开关等。
-*   **`session_data_store` (内存字典)**:
-    *   用于存储会话状态。在“累积式零散识别”模式下，主要存储每个会话已累积识别的OBU文本列表（或更详细的信息）和帧计数器。
-
-### 4. “累积式零散识别”模式详解
-
-*   **目的**: 快速识别用户上传图片中的所有OBU码，并持续累积一个会话中所有已识别的OBU码，同时为当前处理的帧提供即时的视觉反馈。
-*   **工作流程**:
-    1.  客户端发起一个新会话（或使用已有会话ID），上传一张图片。
-    2.  服务端接收图片，进行YOLO检测，得到OBU候选框。
-    3.  对每个候选框进行OCR识别，得到OBU文本和置信度。
-    4.  对识别出的OBU文本进行校验（例如，是否在 `VALID_OBU_CODES` 中）。
-    5.  将当前帧所有通过校验的OBU文本（去重后）添加到该会话的“累积OBU列表”中。
-    6.  在当前帧的原始图像上，绘制YOLO检测框和成功识别的OBU文本，生成一张标注图。
-    7.  将这张标注图缩小到预设尺寸（例如，宽度600像素），进行JPEG编码，然后Base64编码。
-    8.  返回JSON响应，包含：
-        *   完整的“累积OBU列表”（例如，只包含文本字符串的列表）。
-        *   当前帧缩小标注图的Base64编码字符串。
-        *   其他状态信息（如会话ID、处理状态等）。
-*   **用户交互**: 用户可以连续上传图片。每次上传后，客户端都会显示更新后的完整累积列表和当前这张图片的标注情况。用户可以根据这些反馈决定何时结束扫描。
-
-### 5. 核心技术演进与最终方案
-
-本次优化的成功，源于一个清晰、分阶段的演进过程，最终形成了一个优雅、健壮的系统。
-
-##### **阶段一：模型选型 (从通用到专用)**
-
-- **问题**: 初始使用的PP-OCRV5_server模型虽然功能强大，但其设计目标是兼容多语言、多场景，对于我们纯数字的识别任务，不仅性能过剩，且速度较慢（~10s）。
-- **决策**: 切换为更具针对性的en_PP-OCRv4_mobile_rec模型。
-- **成果**: 仅此一步，就带来了显著的速度提升（~3.4s），证明了“专用优于通用”的技术路线是正确的。
-
-##### **阶段二：引擎升级 (从PaddleX到ONNX)**
-
-- **问题**: 虽然速度已有提升，但我们追求极致性能。
-- **决策**: 将PaddlePaddle模型转换为跨平台、高性能的ONNX格式，并使用ONNXRuntime作为推理引擎。
-- **成果**: OCR处理速度进一步被压缩到**1秒以内**，实现了超过10倍的性能飞跃。
-
-##### **阶段三：智能纠错 (从无到有)**
-
-- **问题**: 追求100%的准确率，需要处理模型偶然的、微小的识别错误（如5 -> 6, 5 -> S）。
-- **决策**: 引入**汉明距离**算法，作为“加法”工具，对那些“差一点就对了”的结果进行智能修正。
-
-##### **阶段四：鲁棒纠错 (从通用到专家系统)**
-
-**筛查逻辑：**
-1、首先筛选出小于16位的——这样的值无论如何都是没有利用价值的；
-2、将所有的S等COR会误识别的字母替换为对应的数字(OCR_HEURISTIC_REPLACEMENTS中定义)
-3、取连续16位字串
-4、到内存数据库中查询有效值
-
-#### 4. 配置项说明 (config.py)
-
-为了支持我们强大的专家纠错系统，config.py中新增了以下关键配置：
-
-- ENABLE_OCR_CORRECTION: (True/False) 是否启用OCR结果的模糊匹配纠错功能。
-- OCR_HEURISTIC_REPLACEMENTS: (字典) 一个“启发式替换”规则表，用于在匹配前修正模型已知的、系统性的错误（如{'S': '5', 'B': '8'}）。
-- OCR_CORRECTION_MASK: (字符串) 定义了纠错的“手术区域”。用实际字符表示固定位，用_表示可变位。汉明距离只在固定位上计算。
-- OCR_CORRECTION_HAMMING_THRESHOLD: (整数) 在掩码指定的固定位上，允许的最大纠错字符数。
-
-### 6. API接口文档 (`/predict`)
-
-*   **URL**: `/predict`
-*   **Method**: `POST`
-*   **Content-Type**: `multipart/form-data`
-*   **请求参数 (Form Data)**:
-    *   `session_id` (string, **必选**): 标识当前扫描会话的唯一ID。客户端在开始一个新的扫描批次时应生成一个新的UUID，并在后续属于该批次的请求中始终使用此ID。
-    *   `file` (file, **必选**): 用户上传的OBU图片文件 (支持jpg, jpeg, png)。
-    *   `mode` (string, 可选, **当前版本服务端会忽略此参数并固定行为**):
-        *   理论上可选值为:
-            *   `'scattered_cumulative_ocr'` (默认，且为当前版本唯一支持的核心功能): 执行累积式零散识别。
-            *   `'full_layout'` (暂时冻结): 执行整版布局识别。
-        *   **建议客户端当前版本固定发送 `'scattered_cumulative_ocr'` 或不发送此参数。**
-    *   `force_recalibrate` (string, 可选, **当前版本服务端会忽略此参数**):
-        *   理论上可选值为: `'true'` 或 `'false'`。
-        *   原用于“整版识别”模式下强制重新校准布局，在当前聚焦的模式下无实际作用。
-
-*   **成功响应 (HTTP Status Code: 200)**:
-    *   **Content-Type**: `application/json`
-    *   **JSON响应体结构 (针对 `mode_processed: 'scattered_cumulative_ocr'`)**:
-        ```json
-        {
-            "message": "File processed successfully.",
-            "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-            "received_filename": "1-1.jpg",
-            "mode_processed": "scattered_cumulative_ocr",
-            "timing_profile_seconds": {
-                "1_image_reading": 0.123,
-                "2_yolo_detection": 0.045,
-                "3_ocr_processing": 1.234,
-                "4_scattered_processing": 0.056 // 包含累积和图像编码的时间
-            },
-            "warnings": [ // 可能为空列表
-                // {"message": "警告信息", "code": "WARNING_CODE"}
-            ],
-            "accumulated_results": [ // 所有已累积识别的OBU信息列表
-                {"text": "5001240700323440"},
-                {"text": "5001240700323441"},
-                // ... 更多OBU文本 ...
-                // 未来可以扩展为包含更详细信息的字典，如首次出现的bbox等
-            ],
-            "current_frame_annotated_image_base64": "iVBORw0KGgoAAAANSUhEUgAAAZAAAADSCAMAAABF... (很长的Base64字符串)",
-            "session_status": "scattered_recognition_in_progress" // 或 "scattered_recognition_completed" (如果实现了expected_count)
-        }
-        ```
-    *   **JSON响应体结构 (如果未来启用了 `mode_processed: 'full_layout'`)**:
-        ```json
-        {
-            "message": "File processed successfully.",
-            "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-            "received_filename": "1-1.jpg",
-            "mode_processed": "full_layout",
-            "timing_profile_seconds": { /* ... */ },
-            "warnings": [ /* ... */ ],
-            "obu_status_matrix": [ // 13x4 的二维数组
-                [0, 0, 1, 2], 
-                /* ... 其他行 ... */
-                [-1, 1, 1, -1] 
-            ],
-            "obu_texts": { // (r,c) -> OBU文本 的映射
-                "0_2": "5001240700323401",
-                "12_1": "5001240700323450"
-            },
-            "session_status": "in_progress" // 或 "completed", "first_frame_anchor_error"
-        }
-        ```
-
-*   **失败响应 (HTTP Status Code: 4xx, 5xx)**:
-    *   **Content-Type**: `application/json`
-    *   **JSON响应体结构 (示例)**:
-        ```json
-        {
-            "error": "错误描述信息",
-            "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" // 如果能获取到
-        }
-        ```
-        或者，如果是我们“行政干预”返回的，`warnings` 字段会包含具体的错误信息和code。
-
-### 7. 客户端交互建议 (针对“累积式零散识别”模式)
-
-1.  **会话开始**:
-    *   客户端生成一个唯一的 `session_id` (例如UUID)。
-    *   （当前版本不需要用户选择模式，默认即为新模式）。
-2.  **图片上传与处理**:
-    *   用户选择或拍摄一张图片。
-    *   客户端将图片文件和 `session_id` 通过POST请求发送到 `/predict` 接口。
-3.  **结果展示**:
-    *   客户端接收JSON响应。
-    *   **显示累积OBU列表**: 从 `response_json.accumulated_results` 中获取OBU文本列表，并清晰地展示给用户（例如，在一个可滚动的列表中，可以显示累积总数）。
-    *   **显示当前帧标注图**: 从 `response_json.current_frame_annotated_image_base64` 中获取Base64编码的图像数据，解码并在界面上显示这张缩小的标注图。用户可以通过这张图快速了解当前这张照片的识别情况。
-    *   **处理警告信息**: 如果 `response_json.warnings` 不为空，应向用户展示这些警告。
-4.  **继续或结束**:
-    *   用户可以根据显示的累积结果和当前帧标注图，决定是继续拍摄下一张图片（复用同一个 `session_id`），还是结束本次扫描。
-    *   （未来如果服务端支持 `expected_count`，客户端可以在达到数量后提示用户已完成）。
-5.  **内存set数据同步时机**：
-
-```mermaid
 graph TD
-    subgraph "用户工作流"
-        A[扫码员开始一天的工作] --> B{打开客户端小程序};
-        B --> C["点击<b>“同步最新OBU码”</b>按钮"];
+    subgraph "客户端"
+        A[操作员] -- "1. 拍摄图片" --> B(客户端App);
+        B -- "2. /predict 请求" --> C{服务端};
+        C -- "3. JSON实时反馈<br>(确信/待定列表)" --> B;
+        B -- "4. 显示绿/黄/红标注图" --> A;
+        A -- "5. 完成扫描" --> B;
+        B -- "6. /session/finalize 请求" --> C;
+        C -- "7. JSON终审报告" --> B;
     end
 
-    subgraph "系统交互"
-        C -- "1. 发起 /refresh-cache 请求" --> D{我们的服务};
-        D -- "2. 收到指令" --> E{DatabaseHandler<br><b>一次性、全量</b>查询Oracle};
-        E -- "3. 加载500万数据" --> F[更新内存中的<br><b>VALID_OBU_CODES_CACHE</b>];
-        D -- "4. 返回成功消息" --> C;
+    subgraph "服务端"
+        C -- "调用" --> D[核心处理引擎<br>app.py];
+        D -- "1. 精准提取" --> E(extract_and_correct_candidates);
+        E -- "2. 规则修正" --> F(evidence_pool);
+        F -- "3. 证据累积" --> D;
     end
     
-    subgraph "日常识别工作"
-        G[用户开始连续扫码] -- "/predict 请求" --> H{纠错引擎};
-        H -- "极速使用内存缓存比对" --> F;
+    subgraph "后台维护"
+       M[管理员] -- "携带API-KEY" --> R[POST /refresh-cache];
+       R --> C;
+       C -- "安全校验" --> S[DatabaseHandler];
+       S -- "全量加载OBU码" --> T[内存缓存];
     end
 
-    style C fill:#d4edda,stroke:#155724,stroke-width:2px
+    style F fill:#d4edda,stroke:#155724,stroke-width:2px
 ```
 
+### 3. **最终检码规则 (V18.0)**
 
+**核心理念**: **情景感知，动态裁决。** 本规则集不再采用单一、固定的校验逻辑，而是通过对当前已识别数据的实时“情景分析”，动态地在**“超严格模式”**、**“常规模式”**和**“混沌模式”**之间切换，以达到在不同业务场景下，鲁棒性与精准性的最佳平衡.
 
-### 8. 诊断与调试图说明
+- - #### **阶段一：预处理与净化 (The Bouncer)**
+  
+    **目标**: 从原始、混乱的OCR文本中，筛选出所有**具备合法身份**的、高质量的16位纯数字候选码。此阶段为所有后续裁决提供干净、可靠的输入。
+  
+    - **步骤 1.1 (精准提取)**:
+      - **输入**: OCR原始识别文本。
+      - **动作**: 使用正则表达式 r'[A-Z0-9-]{16,20}'，提取所有由大写字母、数字、连字符组成的，长度在16到20之间的连续字串。
+      - **目的**: 从源头上保证候选者的基本形态和连续性，过滤掉明显无关的噪声。
+    - **步骤 1.2 (规则修正)**:
+      - 对每一个提取出的候选字串，依次应用以下修正规则：
+        - **a. “换头”修正**: 若config.py中启用，则对不符合预设头部的候选者，尝试进行头部替换。
+        - **b. “字符”修正**: 应用启发式字典，进行高置信度的字符级纠错 (如 S->5)。
+        - **c. “格式”净化**: 移除所有非数字字符 (如 -)。
+    - **步骤 1.3 (格式校验)**:
+      - **动作**: 筛选修正后的列表，只保留**长度正好是16位**且**完全由数字组成**的字符串。
+      - **目的**: 确保所有进入下一阶段的候选者，都具备OBU码的基本数字格式。
+    - **步骤 1.4 (身份初审 - 数据库查询)**:
+      - **动作**: 将通过格式校验的每一个候选码，与内存中的OBU总数据库进行比对。
+      - **输出**: 一个**“已验证候选码”**列表。
+      - **目的**: **赋予“鬼”的资格。** 只有在总数据库中真实存在的编码，才有资格进入下一阶段的、更严苛的裁决。
+  
+    #### **阶段二：核心裁决 (The Context-Aware Adjudication Engine)**
+  
+    **目标**: 对所有已经通过“身份初审”的合法OBU码，进行基于当前批次整体“情景”的、动态的、智能的审判。
+  
+    - **步骤 2.1 (最高优先级裁决 - “满溢纯净”规则)**:
+      - **触发**: 在审判任何一个候选码之前，对当前的“证据池”进行快照分析。
+      - **条件**: 证据池总OBU数 > 50 并且 池中存在一个数量 >= 50 的连号号段？
+      - **动作**:
+        - **若触发**: 进入**“超严格模式”**。只接受属于该50连号的候选码，其余**立即抛弃**。
+        - **若未触发**: 继续下一步。
+    - **步骤 2.2 (情景分析与决策 - “混沌安全阀”)**:
+      - **动作**: 对当前“证据池”进行全局的“号段识别”（基于排序和间距阈值）。
+      - **条件**:
+        - 条件A: 在证据池中，**找不到任何3个或以上**的连续号码。
+        - **或者**
+        - 条件B: 识别出的独立号段数量，超过了config.py中定义的MAX_SEGMENTS_THRESHOLD。
+      - **决策**:
+        - **如果满足任一条件**: 系统判定当前为**“混沌模式”**。将**完全跳过**下一步的汉明距离裁决。
+        - **如果不满足任何条件**: 系统判定当前为**“常规模式”**，将继续执行下一步的汉明裁决。
+    - **步骤 2.3 (核心裁决 - “多号段汉明裁决”)**:
+      - **触发**: 仅在“常规模式”下执行。
+      - **动作**:
+        - **a. 生成多个“猜测区域”**: 基于上一步分析出的所有号段，为每一个号段都生成一个专属的“猜测区域”（基于三点定位法）。
+        - **b. 多目标汉明计算与裁决**: 计算候选码与**每一个**“猜测区域”的最小汉明距离。只要它能与**任何一个**区域的距离小于等于阈值，即**通过本轮裁决**；否则，**立即抛弃**。
+    - **步骤 2.4 (最终确认 - 加入证据池)**:
+      - **输入**: 所有通过了前面所有关卡的幸存者。
+      - **动作**: 将该候选码加入“证据池”，其“目击次数”加1。
+      - **目的**: 为最终的“民主投票”和“黄绿灯”显示提供数据支持。
 
-在服务端 `config.py` 中开启 `SAVE_PROCESS_PHOTOS = True` 时，会在服务器的 `process_photo` 目录下生成以下调试图片，以会话ID和帧号等信息命名：
+### 4. API接口文档
 
-*   **`process_photo/yolo_raw/yolo_raw_*.jpg`**: 纯YOLO检测结果图。显示原始图片上YOLO模型检测到的所有边界框，不含OCR文本。用于判断YOLO检测本身的准确性。
-*   **`process_photo/training_rois/SESSION_ID/f*_yolo*_h*_w*.png`**: （需开启 `config.SAVE_TRAINING_ROI_IMAGES = True`）保存经过我们自己所有预处理后、直接送入OCR引擎的ROI图像切片。这些是准备训练物料的基础。
-*   **（冻结功能）`process_photo/frame_layout_projection_*.png`**: 单帧逻辑投射图。在“整版识别”模式下，可视化 `_analyze_layout_by_xy_clustering` 的聚类结果和全局逻辑坐标。
-*   **（冻结功能）`process_photo/annotated_*.jpg`**: 最终YOLO标注图。在“整版识别”模式下，显示原始图片、YOLO框以及最终被填充到逻辑矩阵中的OBU文本。
+#### 4.1. 核心识别接口 (/predict)
 
-### 9. 后续迭代方向 (简述)
+- **用途**: 上传单张图片进行识别，并获取实时的、分类的识别结果。
 
-*   优化OCR预处理，提升识别准确率。
-*   对OCR识别模型进行微调。
-*   为“累积式零散识别”模式增加 `expected_count` 功能。
-*   重新评估并优化“整版布局识别”模式的算法鲁棒性，特别是：
-    *   `_analyze_layout_by_xy_clustering` 的XY轴聚类阈值的自适应算法。
-    *   第一帧在无特殊行情况下的锚定回退机制。
-    *   “空位推断”逻辑。
-*   考虑更持久化的会话存储方案（例如Redis或数据库）。
+- **URL**: /predict
 
+- **Method**: POST
+
+- **Content-Type**: multipart/form-data
+
+- **请求参数 (Form Data)**:
+
+  - session_id (string, **必选**): 标识当前扫描会话的唯一ID。
+  - file (file, **必选**): 用户上传的OBU图片文件 (jpg, jpeg, png)。
+
+- **成功响应 (HTTP 200)**:
+
+  - **JSON响应体**:
+
+    ```
+    {
+        "message": "File processed successfully.",
+        "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "session_status": "in_progress",
+        "confirmed_results": [ // 确信列表 (目击次数 >= PROMOTION_THRESHOLD)
+            {"text": "5001240700323409", "count": 2},
+            {"text": "5001240700323410", "count": 3}
+        ],
+        "pending_results": [ // 待定列表 (目击次数 < PROMOTION_THRESHOLD)
+            {"text": "5001240700323401", "count": 1, "box": [x1, y1, x2, y2]},
+            {"text": "5001240700323402", "count": 1, "box": [x1, y1, x2, y2]}
+        ],
+        "current_frame_annotated_image_base64": "iVBORw0KGgo...",
+        "warnings": [],
+        "timing_profile_seconds": { /* ... */ }
+    }
+    ```
+
+    content_copydownload
+
+    Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+
+#### 4.2. 会话终审接口 (/session/finalize)
+
+- **用途**: 在操作员完成所有拍摄后，调用此接口获取本次会话的最终、完整结果。
+
+- **URL**: /session/finalize
+
+- **Method**: POST
+
+- **Content-Type**: application/json
+
+- **请求体 (JSON Body)**:
+
+  ```
+  {
+      "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  }
+  ```
+
+  content_copydownload
+
+  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+
+- **成功响应 (HTTP 200)**:
+
+  - 
+
+  - **JSON响应体**:
+
+    ```
+    {
+        "message": "Session finalized successfully.",
+        "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "total_count": 51,
+        "final_results": [ // 包含所有被目击过的OBU (无论次数)
+            {"text": "5001240700323401", "count": 1},
+            {"text": "5001240700323402", "count": 1},
+            {"text": "5001240700323409", "count": 2}
+        ]
+    }
+    ```
+
+    content_copydownload
+
+    Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+
+#### 4.3. 后台数据维护接口 (/refresh-cache)
+
+- **用途**: **手动触发**服务端从Oracle数据库重新加载OBU码列表到内存。这在数据库中的OBU码发生增删改后非常有用，可以实现数据热更新，**无需重启服务**。
+
+- **URL**: /refresh-cache
+
+- **Method**: POST
+
+- **安全校验**: 请求必须在HTTP头信息中包含正确的API密钥。
+
+  - **Header Name**: X-API-KEY
+  - **Header Value**: 您在config.py中设置的REFRESH_API_KEY值 (例如: "Vfj@1234.wq")
+
+- **如何使用 (以curl工具为例)**:
+  打开命令行工具，输入以下命令：
+
+  ```
+  curl -X POST -H "X-API-KEY: Vfj@1234.wq" http://127.0.0.1:5000/refresh-cache
+  ```
+
+  content_copydownload
+
+  Use code [with caution](https://support.google.com/legal/answer/13505487).Bash
+
+- **成功响应 (HTTP 200)**:
+
+  ```
+  {
+      "message": "Cache refreshed successfully",
+      "count": 580531 
+  }
+  ```
+
+  content_copydownload
+
+  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+
+- **失败响应 (HTTP 403)**:
+
+  ```
+  {
+      "error": "Invalid or missing API Key"
+  }
+  ```
+
+  content_copydownload
+
+  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+
+### 5. 客户端交互建议
+
+1. **开始扫描**: 客户端生成一个session_id。
+2. **循环拍摄**:
+   - 操作员拍摄图片，客户端调用/predict。
+   - 客户端在界面上清晰地展示“确信列表”和“待定列表”的数量和内容。
+   - 客户端解码current_frame_annotated_image_base64，显示带有**绿/黄/红**三色标注的图片，为操作员提供直观反馈。
+   - 操作员根据反馈，决定是继续扫描新的OBU，还是对黄色区域进行“确认性补拍”。
+3. **完成扫描**:
+   - 操作员点击“完成”按钮。
+   - 客户端调用/session/finalize接口。
+   - 客户端展示final_results中的最终、完整列表给用户确认和保存。
+
+### 6. 关键配置项说明 (config.py)
+
+- OCR_ONNX_MODEL_PATH: **请务必确认**此路径指向您最终使用的v5 server ONNX模型。
+- ENABLE_HEADER_CORRECTION: (True/False) 是否启用头部修正功能。
+- CORRECTION_HEADER_PREFIX: (字符串) 当头部修正启用时，要替换成的正确头部，例如 "5001"。
+- PROMOTION_THRESHOLD: (整数) OBU从“待定”晋升为“确信”所需的最低目击次数，建议值为 2。
+- REFRESH_API_KEY: (字符串) 用于保护/refresh-cache接口的密钥，请设置为一个强密码。
