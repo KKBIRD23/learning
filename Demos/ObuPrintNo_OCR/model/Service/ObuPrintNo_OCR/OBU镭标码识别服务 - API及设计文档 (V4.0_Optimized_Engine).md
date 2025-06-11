@@ -22,31 +22,49 @@
 
 ```mermaid
 graph TD
-    subgraph "客户端"
-        A[操作员] -- "1. 拍摄图片" --> B(客户端App);
-        B -- "2. /predict 请求" --> C{服务端};
-        C -- "3. JSON实时反馈<br>(确信/待定列表)" --> B;
-        B -- "4. 显示绿/黄/红标注图" --> A;
-        A -- "5. 完成扫描" --> B;
-        B -- "6. /session/finalize 请求" --> C;
-        C -- "7. JSON终审报告" --> B;
+    subgraph 客户端
+        A[操作员] --> B[客户端App]
+        B --> C{服务端}
+        C --> B
+        B --> A
+        A --> B
+        B --> C
+        C --> B
     end
 
-    subgraph "服务端"
-        C -- "调用" --> D[核心处理引擎<br>app.py];
-        D -- "1. 精准提取" --> E(extract_and_correct_candidates);
-        E -- "2. 规则修正" --> F(evidence_pool);
-        F -- "3. 证据累积" --> D;
+    subgraph 服务端
+        C --> D[核心处理引擎]
+        D --> E[提取校正]
+        E --> F[动态裁决]
+        F --> G[证据池]
     end
     
-    subgraph "后台维护"
-       M[管理员] -- "携带API-KEY" --> R[POST /refresh-cache];
-       R --> C;
-       C -- "安全校验" --> S[DatabaseHandler];
-       S -- "全量加载OBU码" --> T[内存缓存];
+    subgraph 后台
+        M[管理员] --> R[刷新缓存]
+        M --> H[健康检查]
+        R --> C
+        H --> C
+        C --> S[数据库]
     end
 
-    style F fill:#d4edda,stroke:#155724,stroke-width:2px
+    %% 连线标签（单独添加避免语法冲突）
+    A -->|1. 拍摄图片| B
+    B -->|2. /predict 请求| C
+    C -->|3. JSON反馈| B
+    B -->|4. 显示标注图| A
+    A -->|5. 完成扫描| B
+    B -->|6. /finalize| C
+    C -->|7. 终审报告| B
+    
+    D -->|调用| E
+    E -->|精准提取| F
+    F -->|动态裁决| G
+    
+    M -->|携带API-KEY| R
+    M -->|GET| H
+    C -->|安全校验| S
+
+    style F fill:#d4edda,stroke:#155724
 ```
 
 ### 3. 最终检码规则详解 (V18.1)
@@ -73,6 +91,15 @@ graph TD
 
 ### 4. API接口文档
 
+#### **1. 核心交互流程 (两步走)**
+
+前端应用与后端服务的交互，主要为两步：
+
+1. **持续识别 (/predict)**: 前端应用不断地把用户拍的照片，一张一张地发给我们这个接口。服务端会实时地回复：“哪些号码我已经看准了（确信），哪些我还想再看一眼（待定）”。
+2. **获取最终结果 (/session/finalize)**: 当用户拍完所有照片，点击“完成”按钮时，前端再调用一下这个接口，服务端会把这次扫描的所有结果，一次性、完整地打包返回。
+
+**POST 请求地址：** http://<服务器地址>:5000/predict
+
 #### 4.1. 核心识别接口 (/predict)
 
 - **用途**: 上传单张图片进行识别，并获取实时的、分类的识别结果。
@@ -87,17 +114,18 @@ graph TD
 
   ```
   {
-      "session_status": "in_progress",
-      "confirmed_results": [ {"text": "...", "count": 2} ],
-      "pending_results": [ {"text": "...", "count": 1, "box": [x1,y1,x2,y2]} ],
-      "current_frame_annotated_image_base64": "...",
-      // ... 其他元数据 ...
+      "session_status": "in_progress", // 状态，告诉你还在进行中
+      "confirmed_results": [ // “确信列表”，这些是反复看到、100%靠谱的结果
+          {"text": "5001240700323409", "count": 2} 
+      ],
+      "pending_results": [ // “待定列表”，这些是只看到一次，需要再确认的结果
+          {"text": "5001240700323401", "count": 1}
+      ],
+      "current_frame_annotated_image_base64": "iVBORw0KGgo..." // 这是一个Base64编码的图片字符串
   }
   ```
-
-  content_copydownload
-
-  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+  
+  
 
 #### 4.2. 会话终审接口 (/session/finalize)
 
@@ -113,20 +141,18 @@ graph TD
 
   ```
   {
-      "total_count": 50,
-      "final_results": [
-          {"text": "...", "count": 1},
-          {"text": "...", "count": 2}
+      "total_count": 50, // 最终识别出的总数
+      "final_results": [ // 最终的、完整的列表
+          {"text": "5001240700323401", "count": 1},
+          {"text": "5001240700323409", "count": 2}
       ]
       // ... 其他元数据 ...
   }
   ```
 
-  content_copydownload
+  
 
-  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
-
-#### 4.3. 智能健康检查接口 (/health)
+#### 4.3. 智能健康检查接口 (/health)（前端不用管这个）
 
 - **用途**: 用于外部监控系统，检查服务的核心组件是否正常工作。
 
@@ -146,9 +172,7 @@ graph TD
   }
   ```
 
-  content_copydownload
-
-  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+  
 
 - **失败响应 (HTTP 503)**:
 
@@ -162,11 +186,9 @@ graph TD
   }
   ```
 
-  content_copydownload
+  
 
-  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
-
-#### 4.4. 后台数据维护接口 (/refresh-cache)
+#### 4.4. 后台数据维护接口 (/refresh-cache)（建议任务开始时调用一次）
 
 - **用途**: 手动触发服务端从数据库热更新OBU码列表。
 - **URL**: /refresh-cache

@@ -1,0 +1,12 @@
+# Web Framework and Server
+Flask>=3.0
+waitress>=3.0
+
+# Core Libraries for CV and ML
+numpy>=1.24
+# 使用contrib版本以确保包含所有可能的功能，同时避免与opencv-python冲突
+opencv-contrib-python>=4.8
+onnxruntime>=1.15
+
+# Database Connector
+oracledb>=2.0
