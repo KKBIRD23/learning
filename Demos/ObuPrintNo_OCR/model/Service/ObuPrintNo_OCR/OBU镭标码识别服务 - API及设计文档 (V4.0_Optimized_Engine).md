@@ -6,16 +6,16 @@
 
 ### 1. 项目概述与目标
 
-- 
 - **项目名称**: OBU镭标码高鲁棒性识别与证据管理系统
-- **核心目标**: 提供一个能够应对各种复杂、无序场景（如新旧混装、非连续号段）的OBU镭标码识别服务。
-- **V8.0版本核心功能**:
-  - **精准提取引擎**: 彻底抛弃有风险的全局数字提取，采用基于“连续16位字串”原则的精准提取算法。
-  - **可配置规则修正**: 集成了可配置的“头部修正”和“启发式字符替换”规则，将业务知识与算法完美结合。
-  - **证据累积与晋升机制**: 对每一次识别结果进行“目击次数”累积，不再“一票否决”或“一票通过”。
+- **核心目标**: 提供一个能够应对各种复杂、无序场景（如新旧混装、非连续号段、多号段混装）的OBU镭标码识别服务。
+- **V19.0版本核心功能**:
+  - **纯粹的零散识别模式**: 移除了所有与“整版识别”相关的冗余代码，使核心逻辑更清晰，维护成本更低。
+  - **V18.1终极裁决引擎**: 固化了我们共同设计的、包含“满溢纯净”、“混沌安全阀”、“多号段汉明裁决”等规则的动态情景感知裁决引擎。
+  - **证据累积与晋升机制**: 对每一次识别结果进行“目击次数”累积，并通过“黄绿灯”机制提供直观的实时反馈。
   - **双阶API架构**:
-    - /predict: 提供实时的、包含“确信”和“待定”分类的高质量反馈，智能引导操作。
+    - /predict: 提供实时的、包含“确信”和“待定”分类的高质量反馈。
     - /session/finalize: 在会话结束时，提供包含所有潜在识别结果的、最完整的终审报告。
+  - **智能健康检查**: 提供/health接口，可实时监控数据库连接池和内存缓存的状态。
   - **后台数据热更新**: 提供带安全密钥的/refresh-cache接口，可随时从数据库同步最新的OBU码列表，无需重启服务。
 
 ### 2. 系统架构简图
@@ -49,59 +49,27 @@ graph TD
     style F fill:#d4edda,stroke:#155724,stroke-width:2px
 ```
 
-### 3. **最终检码规则 (V18.0)**
+### 3. 最终检码规则详解 (V18.1)
 
-**核心理念**: **情景感知，动态裁决。** 本规则集不再采用单一、固定的校验逻辑，而是通过对当前已识别数据的实时“情景分析”，动态地在**“超严格模式”**、**“常规模式”**和**“混沌模式”**之间切换，以达到在不同业务场景下，鲁棒性与精准性的最佳平衡.
+我们的系统严格遵循一套我们共同打磨出的、分阶段的检码规则：
 
-- - #### **阶段一：预处理与净化 (The Bouncer)**
-  
-    **目标**: 从原始、混乱的OCR文本中，筛选出所有**具备合法身份**的、高质量的16位纯数字候选码。此阶段为所有后续裁决提供干净、可靠的输入。
-  
-    - **步骤 1.1 (精准提取)**:
-      - **输入**: OCR原始识别文本。
-      - **动作**: 使用正则表达式 r'[A-Z0-9-]{16,20}'，提取所有由大写字母、数字、连字符组成的，长度在16到20之间的连续字串。
-      - **目的**: 从源头上保证候选者的基本形态和连续性，过滤掉明显无关的噪声。
-    - **步骤 1.2 (规则修正)**:
-      - 对每一个提取出的候选字串，依次应用以下修正规则：
-        - **a. “换头”修正**: 若config.py中启用，则对不符合预设头部的候选者，尝试进行头部替换。
-        - **b. “字符”修正**: 应用启发式字典，进行高置信度的字符级纠错 (如 S->5)。
-        - **c. “格式”净化**: 移除所有非数字字符 (如 -)。
-    - **步骤 1.3 (格式校验)**:
-      - **动作**: 筛选修正后的列表，只保留**长度正好是16位**且**完全由数字组成**的字符串。
-      - **目的**: 确保所有进入下一阶段的候选者，都具备OBU码的基本数字格式。
-    - **步骤 1.4 (身份初审 - 数据库查询)**:
-      - **动作**: 将通过格式校验的每一个候选码，与内存中的OBU总数据库进行比对。
-      - **输出**: 一个**“已验证候选码”**列表。
-      - **目的**: **赋予“鬼”的资格。** 只有在总数据库中真实存在的编码，才有资格进入下一阶段的、更严苛的裁决。
-  
-    #### **阶段二：核心裁决 (The Context-Aware Adjudication Engine)**
-  
-    **目标**: 对所有已经通过“身份初审”的合法OBU码，进行基于当前批次整体“情景”的、动态的、智能的审判。
-  
-    - **步骤 2.1 (最高优先级裁决 - “满溢纯净”规则)**:
-      - **触发**: 在审判任何一个候选码之前，对当前的“证据池”进行快照分析。
-      - **条件**: 证据池总OBU数 > 50 并且 池中存在一个数量 >= 50 的连号号段？
-      - **动作**:
-        - **若触发**: 进入**“超严格模式”**。只接受属于该50连号的候选码，其余**立即抛弃**。
-        - **若未触发**: 继续下一步。
-    - **步骤 2.2 (情景分析与决策 - “混沌安全阀”)**:
-      - **动作**: 对当前“证据池”进行全局的“号段识别”（基于排序和间距阈值）。
-      - **条件**:
-        - 条件A: 在证据池中，**找不到任何3个或以上**的连续号码。
-        - **或者**
-        - 条件B: 识别出的独立号段数量，超过了config.py中定义的MAX_SEGMENTS_THRESHOLD。
-      - **决策**:
-        - **如果满足任一条件**: 系统判定当前为**“混沌模式”**。将**完全跳过**下一步的汉明距离裁决。
-        - **如果不满足任何条件**: 系统判定当前为**“常规模式”**，将继续执行下一步的汉明裁决。
-    - **步骤 2.3 (核心裁决 - “多号段汉明裁决”)**:
-      - **触发**: 仅在“常规模式”下执行。
-      - **动作**:
-        - **a. 生成多个“猜测区域”**: 基于上一步分析出的所有号段，为每一个号段都生成一个专属的“猜测区域”（基于三点定位法）。
-        - **b. 多目标汉明计算与裁决**: 计算候选码与**每一个**“猜测区域”的最小汉明距离。只要它能与**任何一个**区域的距离小于等于阈值，即**通过本轮裁决**；否则，**立即抛弃**。
-    - **步骤 2.4 (最终确认 - 加入证据池)**:
-      - **输入**: 所有通过了前面所有关卡的幸存者。
-      - **动作**: 将该候选码加入“证据池”，其“目击次数”加1。
-      - **目的**: 为最终的“民主投票”和“黄绿灯”显示提供数据支持。
+#### **阶段一：预处理与净化 (The Bouncer)**
+
+**目标**: 从原始文本中，筛选出所有**具备合法身份**的16位纯数字候选码。
+
+1. **精准提取**: 使用 r'[A-Z0-9-]{16,20}' 提取“长得像”的连续字串。
+2. **规则修正**: 依次应用“换头”、“字符替换”、“格式净化”规则。
+3. **格式校验**: 只保留修正后为16位纯数字的字符串。
+4. **身份初审**: 将通过格式校验的码，与内存中的OBU总数据库比对，只有存在的才能进入下一阶段。
+
+#### **阶段二：核心裁决 (The Context-Aware Adjudication Engine)**
+
+**目标**: 对所有已具备“合法身份”的OBU码，进行基于当前批次整体“情景”的、动态的、智能的审判。
+
+1. **“满溢纯净”规则**: 若证据池已满50个且高度连续，则后续只接受属于该连号的码。
+2. **“混沌安全阀”**: 若证据池中找不到3连号，或号段数量过多，则判定为“混沌模式”，**跳过**汉明裁决。
+3. **“多号段汉明裁决”**: 在“常规模式”下，计算候选码与所有已识别号段的最小汉明距离。只有当它与**任何一个**号段足够接近时，才通过。
+4. **最终确认**: 通过所有裁决的候选码，被加入“证据池”进行次数累积。
 
 ### 4. API接口文档
 
@@ -113,39 +81,23 @@ graph TD
 
 - **Method**: POST
 
-- **Content-Type**: multipart/form-data
-
-- **请求参数 (Form Data)**:
-
-  - session_id (string, **必选**): 标识当前扫描会话的唯一ID。
-  - file (file, **必选**): 用户上传的OBU图片文件 (jpg, jpeg, png)。
+- **请求参数 (Form Data)**: session_id (string, 必选), file (file, 必选)。
 
 - **成功响应 (HTTP 200)**:
 
-  - **JSON响应体**:
+  ```
+  {
+      "session_status": "in_progress",
+      "confirmed_results": [ {"text": "...", "count": 2} ],
+      "pending_results": [ {"text": "...", "count": 1, "box": [x1,y1,x2,y2]} ],
+      "current_frame_annotated_image_base64": "...",
+      // ... 其他元数据 ...
+  }
+  ```
 
-    ```
-    {
-        "message": "File processed successfully.",
-        "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "session_status": "in_progress",
-        "confirmed_results": [ // 确信列表 (目击次数 >= PROMOTION_THRESHOLD)
-            {"text": "5001240700323409", "count": 2},
-            {"text": "5001240700323410", "count": 3}
-        ],
-        "pending_results": [ // 待定列表 (目击次数 < PROMOTION_THRESHOLD)
-            {"text": "5001240700323401", "count": 1, "box": [x1, y1, x2, y2]},
-            {"text": "5001240700323402", "count": 1, "box": [x1, y1, x2, y2]}
-        ],
-        "current_frame_annotated_image_base64": "iVBORw0KGgo...",
-        "warnings": [],
-        "timing_profile_seconds": { /* ... */ }
-    }
-    ```
+  content_copydownload
 
-    content_copydownload
-
-    Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
 
 #### 4.2. 会话终审接口 (/session/finalize)
 
@@ -155,13 +107,18 @@ graph TD
 
 - **Method**: POST
 
-- **Content-Type**: application/json
+- **请求体 (JSON Body)**: { "session_id": "..." }
 
-- **请求体 (JSON Body)**:
+- **成功响应 (HTTP 200)**:
 
   ```
   {
-      "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      "total_count": 50,
+      "final_results": [
+          {"text": "...", "count": 1},
+          {"text": "...", "count": 2}
+      ]
+      // ... 其他元数据 ...
   }
   ```
 
@@ -169,79 +126,65 @@ graph TD
 
   Use code [with caution](https://support.google.com/legal/answer/13505487).Json
 
+#### 4.3. 智能健康检查接口 (/health)
+
+- **用途**: 用于外部监控系统，检查服务的核心组件是否正常工作。
+
+- **URL**: /health
+
+- **Method**: GET
+
 - **成功响应 (HTTP 200)**:
 
-  - 
+  ```
+  {
+      "status": "ok",
+      "checks": {
+          "database_pool": "ok",
+          "memory_cache": "ok, 580531 items"
+      }
+  }
+  ```
 
-  - **JSON响应体**:
+  content_copydownload
 
-    ```
-    {
-        "message": "Session finalized successfully.",
-        "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "total_count": 51,
-        "final_results": [ // 包含所有被目击过的OBU (无论次数)
-            {"text": "5001240700323401", "count": 1},
-            {"text": "5001240700323402", "count": 1},
-            {"text": "5001240700323409", "count": 2}
-        ]
-    }
-    ```
+  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
 
-    content_copydownload
+- **失败响应 (HTTP 503)**:
 
-    Use code [with caution](https://support.google.com/legal/answer/13505487).Json
+  ```
+  {
+      "status": "error",
+      "checks": {
+          "database_pool": "error: not initialized",
+          "memory_cache": "ok, 580531 items"
+      }
+  }
+  ```
 
-#### 4.3. 后台数据维护接口 (/refresh-cache)
+  content_copydownload
 
-- **用途**: **手动触发**服务端从Oracle数据库重新加载OBU码列表到内存。这在数据库中的OBU码发生增删改后非常有用，可以实现数据热更新，**无需重启服务**。
+  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
 
+#### 4.4. 后台数据维护接口 (/refresh-cache)
+
+- **用途**: 手动触发服务端从数据库热更新OBU码列表。
 - **URL**: /refresh-cache
-
 - **Method**: POST
+- **安全校验**: 请求头需包含 X-API-KEY 及其正确的值。
+- **调用示例**: curl -X POST -H "X-API-KEY: your_secret_key" http://127.0.0.1:5000/refresh-cache
 
-- **安全校验**: 请求必须在HTTP头信息中包含正确的API密钥。
+### 5. 关键配置项说明 (config.py)
 
-  - **Header Name**: X-API-KEY
-  - **Header Value**: 您在config.py中设置的REFRESH_API_KEY值 (例如: "Vfj@1234.wq")
+- LOG_LEVEL: 控制日志输出的详细程度，生产环境建议设为"INFO"。
+- ENABLE_HEADER_CORRECTION, CORRECTION_HEADER_PREFIX: 控制“换头”规则。
+- PROMOTION_THRESHOLD: “待定”晋升为“确信”的目击次数阈值。
+- ENABLE_HAMMING_CHECK, HAMMING_THRESHOLD: 控制汉明裁决。
+- MIN_SEGMENT_MEMBERS, SEGMENT_GAP_THRESHOLD, GUESS_RANGE: 控制“三点定位”和号段识别。
+- MAX_SEGMENTS_THRESHOLD: 触发“混沌模式”的号段数量上限。
+- REFRESH_API_KEY: /refresh-cache接口的密钥。
 
-- **如何使用 (以curl工具为例)**:
-  打开命令行工具，输入以下命令：
-
-  ```
-  curl -X POST -H "X-API-KEY: Vfj@1234.wq" http://127.0.0.1:5000/refresh-cache
-  ```
-
-  content_copydownload
-
-  Use code [with caution](https://support.google.com/legal/answer/13505487).Bash
-
-- **成功响应 (HTTP 200)**:
-
-  ```
-  {
-      "message": "Cache refreshed successfully",
-      "count": 580531 
-  }
-  ```
-
-  content_copydownload
-
-  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
-
-- **失败响应 (HTTP 403)**:
-
-  ```
-  {
-      "error": "Invalid or missing API Key"
-  }
-  ```
-
-  content_copydownload
-
-  Use code [with caution](https://support.google.com/legal/answer/13505487).Json
-
-### 5. 客户端交互建议
+### 6. 客户端交互建议
 
 1. **开始扫描**: 客户端生成一个session_id。
 2. **循环拍摄**:
@@ -254,7 +197,7 @@ graph TD
    - 客户端调用/session/finalize接口。
    - 客户端展示final_results中的最终、完整列表给用户确认和保存。
 
-### 6. 关键配置项说明 (config.py)
+### 7. 关键配置项说明 (config.py)
 
 - OCR_ONNX_MODEL_PATH: **请务必确认**此路径指向您最终使用的v5 server ONNX模型。
 - ENABLE_HEADER_CORRECTION: (True/False) 是否启用头部修正功能。
