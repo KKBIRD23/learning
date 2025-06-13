@@ -10,3 +10,8 @@ Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/uploads/
 Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/log/
 Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/.dockerignore
 Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/Dockerfile
+Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/model/
+Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip
+Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/.env
+Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/obu-ocr-service-v1.0.tar
+Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/ObuPrintNo_OCR_v1.0.tar

@@ -35,7 +35,9 @@ class YoloHandler:
     def _load_model(self):
         self.logger.info(f"YOLO Handler: 正在从 {self.model_path} 加载ONNX模型...")
         try:
+            # --- 恢复：移除所有SessionOptions，让ONNX在新环境下自由发挥 ---
             self.onnx_session = onnxruntime.InferenceSession(self.model_path, providers=['CPUExecutionProvider'])
+
             input_meta = self.onnx_session.get_inputs()[0]
             self.input_name = input_meta.name
             self.input_shape = input_meta.shape

@@ -3,12 +3,12 @@
 import os
 
 # --- 基础路径配置 ---
-BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
 
 # --- 模型路径 ---
-ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "BarCode_Detect", "Barcode_dynamic-True_half-False.onnx")
-OCR_ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "PP-OCRv5_server_rec_onnx", "inference.onnx")
-OCR_KEYS_PATH = os.path.join(BASE_PROJECT_DIR, "model", "model", "PaddleOCR", "PP-OCRv5_server_rec_onnx", "keys.txt")
+ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "yolo", "Barcode_dynamic-True_half-False.onnx")
+OCR_ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "ppocr-v5", "inference.onnx")
+OCR_KEYS_PATH = os.path.join(BASE_PROJECT_DIR, "model", "ppocr-v5", "keys.txt")
 
 # ================== 核心裁决引擎配置 (V18.1) ==================
 # --- 预处理与净化 ---
@@ -30,12 +30,8 @@ ENABLE_HEADER_CORRECTION = True
 CORRECTION_HEADER_PREFIX = "5001" # 您指定的、唯一可以确信的头部规则
 
 # --- 证据晋升与会话管理 ---
-PROMOTION_THRESHOLD = 2      # OBU被确信所需的最低目击次数,当设置为1时相当于关闭确信模式直接信任
+PROMOTION_THRESHOLD = 1      # OBU被确信所需的最低目击次数,当设置为1时相当于关闭确信模式直接信任
 SESSION_CLEANUP_HOURS = 24   # 会话数据在内存中保留的小时数
-
-# --- 证据晋升与会话管理 ---
-PROMOTION_THRESHOLD = 2
-SESSION_CLEANUP_HOURS = 24
 
 # --- 动态批次验证器 ---
 # a. “满溢纯净”规则
@@ -59,14 +55,17 @@ MAX_SEGMENTS_THRESHOLD = 5
 # ============================================================
 
 # ================== 数据库配置 ==============================
-DB_USERNAME = "VFJ_CQGS"
-DB_PASSWORD = "vfj_20231007"
-DB_DSN = "192.168.1.200:1521/ORCL"
+# 优先从环境变量读取，如果不存在，则使用后面的默认值。
+# 这样既保证了生产环境的安全性，也方便了本地开发。
+# ============本地测试使用后段，生产使用.env中配置的环境变量====================
+DB_USERNAME = os.getenv("DB_USERNAME", "VFJ_CQGS")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "vfj_20231007")
+DB_DSN = os.getenv("DB_DSN", "192.168.1.200:1521/ORCL")
 DB_TABLE_NAME = "SINGCHIPOBU"
 DB_COLUMN_NAME = "OBUSAMSERIALNO"
 
 # --- 安全与同步配置 ---
-REFRESH_API_KEY = "Vfj@1234.wq"
+REFRESH_API_KEY = os.getenv("REFRESH_API_KEY", "Vfj@1234.wq")
 # ============================================================
 
 # --- Flask 应用配置 ---
@@ -93,7 +92,7 @@ OCR_TARGET_INPUT_HEIGHT = 48
 OCR_DIGIT_ROI_Y_OFFSET_FACTOR = -0.15
 OCR_DIGIT_ROI_HEIGHT_FACTOR = 0.7
 OCR_DIGIT_ROI_WIDTH_EXPAND_FACTOR = 1.05
-OCR_NUM_WORKERS = 4
+OCR_NUM_WORKERS = 7
 SAVE_TRAINING_ROI_IMAGES = True
 
 # --- 布局与状态管理配置 (当前主要用于调试图保存路径) ---

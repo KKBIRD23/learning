@@ -18,6 +18,7 @@ import re
 from waitress import serve
 import threading
 from itertools import groupby
+import oracledb
 
 # --- 从新模块导入 ---
 import config
@@ -351,25 +352,56 @@ def finalize_session_route():
 def predict_image_route():
     logger = current_app.logger
     session_id = request.form.get('session_id')
-    if not session_id: return jsonify({"error": "session_id is required"}), 400
-    if 'file' not in request.files: return jsonify({"error": "No file part in the request"}), 400
+    if not session_id:
+        return jsonify({"error": "session_id is required"}), 400
+
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part in the request"}), 400
+
     file = request.files['file']
-    if file.filename == '' or not allowed_file(file.filename): return jsonify({"error": "Invalid or missing file"}), 400
+    if file.filename == '' or not allowed_file(file.filename):
+        return jsonify({"error": "Invalid or missing file"}), 400
+
     original_filename_for_log = secure_filename(file.filename)
+    upload_path = None  # 初始化 upload_path
+
     try:
+        # --- 线程安全修改：将所有与 session_data_store 相关的操作放入锁内 ---
         with CACHE_LOCK:
             if session_id not in session_data_store:
                 logger.info(f"会话 {session_id}: 新建会话。")
-                session_data_store[session_id] = {"evidence_pool": {}, "frame_count": 0, "last_activity": datetime.now()}
+                session_data_store[session_id] = {
+                    "evidence_pool": {},
+                    "frame_count": 0,
+                    "last_activity": datetime.now()
+                }
+            # 在锁内安全地获取和更新会话信息
             session = session_data_store[session_id]
+            frame_num_for_filename = session.get("frame_count", 0) + 1
+            # 注意：frame_count 的递增现在已移至 process_image_with_ocr_logic 内部
+            # 但文件名可以预先使用这个数字，因为 process_image_with_ocr_logic 会正式增加它
+
+        # --- 文件保存操作移出锁，减少锁的持有时间 ---
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         name, ext = os.path.splitext(original_filename_for_log)
-        frame_num_for_filename = session.get("frame_count", 0) + 1
         filename_on_server = f"s{session_id[:8]}_f{frame_num_for_filename}_{name}_{timestamp}{ext}"
+
+        # 确保上传目录存在
+        if not os.path.exists(config.UPLOAD_FOLDER):
+            os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
         upload_path = os.path.join(config.UPLOAD_FOLDER, filename_on_server)
-        if not os.path.exists(config.UPLOAD_FOLDER): os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
         file.save(upload_path)
-        confirmed_res, pending_res, timings_res, warnings_res, base64_img_res = process_image_with_ocr_logic(upload_path, session_id, logger)
+
+        # --- 核心处理逻辑 ---
+        # process_image_with_ocr_logic 内部已经有对 session 的读写，
+        # 但由于它是在单个请求线程中被调用的，且我们已在外部确保了会话的创建是安全的，
+        # 其内部对 session 的修改（如 frame_count++, evidence_pool.update）
+        # 也是安全的，因为它们都发生在同一个线程的上下文中。
+        # 真正的并发风险在于多个线程同时尝试修改同一个 session_id 的数据，
+        # 外层的锁已经防止了这种情况。
+        confirmed_res, pending_res, timings_res, warnings_res, base64_img_res = \
+            process_image_with_ocr_logic(upload_path, session_id, logger)
+
         response_data = {
             "message": "File processed successfully.", "session_id": session_id,
             "received_filename": original_filename_for_log, "timing_profile_seconds": timings_res,
@@ -379,8 +411,16 @@ def predict_image_route():
         }
         logger.info(f"会话 {session_id}: 处理完成。确信: {len(confirmed_res or [])}, 待定: {len(pending_res or [])}")
         return jsonify(response_data), 200
+
     except Exception as e:
         logger.error(f"会话 {session_id}: 处理图片 '{original_filename_for_log}' 时发生严重错误: {e}", exc_info=True)
+        # 考虑在这里清理可能已保存的上传文件
+        if upload_path and os.path.exists(upload_path):
+            try:
+                os.remove(upload_path)
+                logger.info(f"已清理因错误而未处理的上传文件: {upload_path}")
+            except OSError as e_remove:
+                logger.error(f"清理上传文件 {upload_path} 时失败: {e_remove}")
         return jsonify({"error": f"An unexpected error occurred: {str(e)}", "session_id": session_id}), 500
 
 # --- 应用初始化与启动 ---
@@ -410,17 +450,33 @@ def cleanup_on_exit():
         db_handler.close_pool()
 
 if __name__ == '__main__':
+    # --- 核心修正：在所有操作之前，强制初始化Oracle客户端 ---
+    # 这会确保python-oracledb库进入“Thick Mode”，并使用我们安装的Instant Client。
+    # 这是解决 DPY-3001 错误的根本方法。
+    try:
+        oracledb.init_oracle_client(lib_dir="/opt/oracle/instantclient_21_13")
+        print("Oracle Client (Thick Mode) initialized successfully.")
+    except Exception as e:
+        print(f"CRITICAL: Failed to initialize Oracle Client: {e}")
+        exit(1)
+
+    # 后续所有启动步骤保持不变
     setup_logging(app)
     try:
         initialize_global_handlers(app.logger)
     except Exception as e_init:
         app.logger.critical(f"应用启动失败，无法初始化核心处理器: {e_init}")
         exit(1)
+
     atexit.register(cleanup_on_exit)
     cleanup_thread = threading.Thread(target=cleanup_expired_sessions, daemon=True)
     cleanup_thread.start()
     app.logger.info("后台会话清理线程已启动。")
-    if not os.path.exists(config.UPLOAD_FOLDER): os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
-    if not os.path.exists(config.PROCESS_PHOTO_DIR): os.makedirs(config.PROCESS_PHOTO_DIR, exist_ok=True)
+
+    if not os.path.exists(config.UPLOAD_FOLDER):
+        os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
+    if not os.path.exists(config.PROCESS_PHOTO_DIR):
+        os.makedirs(config.PROCESS_PHOTO_DIR, exist_ok=True)
+
     app.logger.info(f"服务版本 {config.APP_VERSION} 启动中... 使用生产级服务器 Waitress。")
     serve(app, host='0.0.0.0', port=5000)

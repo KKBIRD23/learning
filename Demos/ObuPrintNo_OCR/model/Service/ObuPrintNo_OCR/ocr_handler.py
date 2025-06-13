@@ -15,12 +15,15 @@ from config import SAVE_TRAINING_ROI_IMAGES, PROCESS_PHOTO_DIR
 _worker_onnx_session = None
 _worker_char_dict = None
 
+# ocr_handler.py
+
 def init_ocr_worker_process(onnx_model_path: str, keys_path: str):
     """OCR工作进程的初始化函数 (ONNX版)。"""
     global _worker_onnx_session, _worker_char_dict
     worker_pid = os.getpid()
     print(f"[OCR Worker PID {worker_pid}] Initializing ONNX session from: {onnx_model_path}")
     try:
+        # --- 恢复：移除所有SessionOptions ---
         _worker_onnx_session = onnxruntime.InferenceSession(onnx_model_path, providers=['CPUExecutionProvider'])
 
         # --- 核心修正点 1: 构建正确的字典 ---
@@ -140,9 +143,12 @@ class OcrHandler:
             self.ocr_processing_pool = None; self.num_workers = 1
             self._initialize_serial_onnx_session()
 
+# ocr_handler.py
+
     def _initialize_serial_onnx_session(self):
         self.logger.info("OCR Handler: Initializing ONNX OCR for serial processing...")
         try:
+            # --- 恢复：移除所有SessionOptions ---
             self.serial_onnx_session = onnxruntime.InferenceSession(self.onnx_model_path, providers=['CPUExecutionProvider'])
 
             char_list = []
