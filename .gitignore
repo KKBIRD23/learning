@@ -13,5 +13,9 @@ Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/Dockerfile
 Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/model/
 Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip
 Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/.env
+<<<<<<< HEAD
+Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/*.tar
+=======
 Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/obu-ocr-service-v1.0.tar
 Demos/ObuPrintNo_OCR/model/Service/ObuPrintNo_OCR/ObuPrintNo_OCR_v1.0.tar
+>>>>>>> 9daffdc (做了docker-compose专用场景脚本文件)

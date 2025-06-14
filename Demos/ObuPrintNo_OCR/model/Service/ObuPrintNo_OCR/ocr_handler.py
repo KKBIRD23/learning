@@ -127,9 +127,13 @@ class OcrHandler:
             self._initialize_serial_onnx_session()
 
     def _initialize_ocr_pool(self):
-        self.logger.info(f"OCR Handler: Initializing ONNX OCR processing pool with {self.num_workers} workers...")
+        self.logger.info(f"OCR Handler: Initializing OCR processing pool with {self.num_workers} workers...")
         try:
-            if os.name == 'nt':
+            # [核心修复] 强制使用'spawn'模式来创建子进程。
+            # 这能确保在Linux/Docker环境中，每个子进程都有一个干净的、
+            # 不会与父进程资源冲突的全新环境，从而根除死锁问题。
+            # 我们不再需要 if os.name == 'nt' 的判断，因为'spawn'在所有平台都可用。
+            if multiprocessing.get_start_method(allow_none=True) != 'spawn':
                 multiprocessing.set_start_method('spawn', force=True)
 
             self.ocr_processing_pool = multiprocessing.Pool(
@@ -137,11 +141,10 @@ class OcrHandler:
                 initializer=init_ocr_worker_process,
                 initargs=(self.onnx_model_path, self.keys_path)
             )
-            self.logger.info("OCR Handler: ONNX OCR processing pool initialized.")
+            self.logger.info("OCR Handler: OCR processing pool initialized successfully with 'spawn' method.")
         except Exception as e:
-            self.logger.critical(f"OCR Handler: Failed to create ONNX OCR pool: {e}", exc_info=True)
-            self.ocr_processing_pool = None; self.num_workers = 1
-            self._initialize_serial_onnx_session()
+            self.logger.critical(f"OCR Handler: Failed to create OCR pool: {e}", exc_info=True)
+            self.ocr_processing_pool = None
 
 # ocr_handler.py
 
