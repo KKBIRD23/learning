@@ -12,8 +12,8 @@ import base64
 # --- 配置 ---
 # SERVER_URL_PREDICT = "http://127.0.0.1:5000/predict"      # 本机测试地址
 # SERVER_URL_FINALIZE = "http://127.0.0.1:5000/session/finalize"    # 本机测试地址
-SERVER_URL_PREDICT = "http://192.168.1.101:5000/predict"    #   本地测试地址
-SERVER_URL_FINALIZE = "http://192.168.1.101:5000/session/finalize"  #   本地测试地址
+SERVER_URL_PREDICT = "http://172.19.205.247:5000:5000/predict"    #   本地测试地址
+SERVER_URL_FINALIZE = "http://172.19.205.247:5000:5000/session/finalize"  #   本地测试地址
 # SERVER_URL_PREDICT = "http://172.16.252.16:5000/predict"    #   生产测试环境
 # SERVER_URL_FINALIZE = "http://172.16.252.16:5000/session/finalize"  #   生产测试环境
 # 请将这里的路径指向您要测试的图片文件夹
