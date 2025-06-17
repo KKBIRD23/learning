@@ -19,6 +19,7 @@ from waitress import serve
 import threading
 from itertools import groupby
 import oracledb
+import platform
 
 # --- 从新模块导入 ---
 import config
@@ -450,17 +451,24 @@ def cleanup_on_exit():
         db_handler.close_pool()
 
 if __name__ == '__main__':
-    # --- 核心修正：在所有操作之前，强制初始化Oracle客户端 ---
-    # 这会确保python-oracledb库进入“Thick Mode”，并使用我们安装的Instant Client。
-    # 这是解决 DPY-3001 错误的根本方法。
+    # --- 核心修正：根据操作系统智能初始化Oracle客户端 ---
     try:
-        oracledb.init_oracle_client(lib_dir="/opt/oracle/instantclient_21_13")
-        print("Oracle Client (Thick Mode) initialized successfully.")
+        # 判断当前操作系统是否不是Windows (即，是我们用于生产的Linux Docker环境)
+        if platform.system() != "Windows":
+            # 如果是Linux，则执行我们为Docker准备的、强制的“厚模式”初始化
+            oracledb.init_oracle_client(lib_dir="/opt/oracle/instantclient_21_13")
+            print("Oracle Client (Thick Mode) initialized for Linux/Docker.")
+        else:
+            # 如果是Windows，我们什么都不做。
+            # 这将让 oracledb 库自动使用默认的“瘦模式”，它不需要安装任何客户端。
+            # 这就恢复了您之前在Windows上可以正常运行的状态。
+            print("Running on Windows, using default 'Thin Mode' for Oracle connection.")
+
     except Exception as e:
         print(f"CRITICAL: Failed to initialize Oracle Client: {e}")
         exit(1)
 
-    # 后续所有启动步骤保持不变
+    # --- 后续所有启动步骤保持不变 ---
     setup_logging(app)
     try:
         initialize_global_handlers(app.logger)

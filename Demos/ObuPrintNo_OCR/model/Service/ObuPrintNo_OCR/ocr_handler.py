@@ -1,4 +1,4 @@
-# ocr_handler.py (FINAL BATTLE VERSION)
+# ocr_handler.py (FINAL VERSION)
 import cv2
 import numpy as np
 import onnxruntime
@@ -15,27 +15,31 @@ from config import SAVE_TRAINING_ROI_IMAGES, PROCESS_PHOTO_DIR
 _worker_onnx_session = None
 _worker_char_dict = None
 
-# ocr_handler.py
-
 def init_ocr_worker_process(onnx_model_path: str, keys_path: str):
     """OCR工作进程的初始化函数 (ONNX版)。"""
     global _worker_onnx_session, _worker_char_dict
     worker_pid = os.getpid()
     print(f"[OCR Worker PID {worker_pid}] Initializing ONNX session from: {onnx_model_path}")
     try:
-        # --- 恢复：移除所有SessionOptions ---
-        _worker_onnx_session = onnxruntime.InferenceSession(onnx_model_path, providers=['CPUExecutionProvider'])
+        # --- 最终修正：创建并配置SessionOptions，强制单线程顺序执行 ---
+        sess_options = onnxruntime.SessionOptions()
+        sess_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+        sess_options.intra_op_num_threads = 1
 
-        # --- 核心修正点 1: 构建正确的字典 ---
-        # PaddleOCR的CTC模型约定，索引0为'blank'，我们必须手动在最前面添加它。
+        _worker_onnx_session = onnxruntime.InferenceSession(
+            onnx_model_path,
+            sess_options=sess_options,
+            providers=['CPUExecutionProvider']
+        )
+
         char_list = []
-        char_list.append("[blank]") # 手动添加 blank token 到索引0
+        char_list.append("[blank]")
         with open(keys_path, 'r', encoding='utf-8') as f:
             for line in f:
                 char_list.append(line.strip())
 
         _worker_char_dict = char_list
-        print(f"[OCR Worker PID {worker_pid}] ONNX session and character dict (size={len(_worker_char_dict)}) initialized. Blank token added.")
+        print(f"[OCR Worker PID {worker_pid}] ONNX session and character dict (size={len(_worker_char_dict)}) initialized.")
     except Exception as e:
         print(f"[OCR Worker PID {worker_pid}] ONNX session initialization FAILED: {e}")
         _worker_onnx_session = None
@@ -45,18 +49,13 @@ def _ctc_greedy_decoder(preds: np.ndarray, char_dict: List[str]) -> str:
     """简单的CTC贪心解码器 (V8.1 健壮版)。"""
     preds_indices = np.argmax(preds, axis=2)
     result = []
-    last_index = 0 # 初始化为blank的索引
+    last_index = 0
     char_dict_len = len(char_dict)
 
     for i in range(preds_indices.shape[1]):
         idx = preds_indices[0][i]
-
-        # 【核心修正】增加安全检查，防止模型在处理异常输入时返回越界索引
         if idx >= char_dict_len:
-            # 如果索引超出字典范围，直接忽略这个预测，保证程序不崩溃
             continue
-
-        # 如果当前索引不是 blank (索引0)，并且不与上一个字符重复，则添加
         if idx != 0 and idx != last_index:
             result.append(char_dict[idx])
         last_index = idx
@@ -86,9 +85,6 @@ def ocr_task_for_worker_process(task_data_tuple: Tuple[int, np.ndarray, Tuple[in
         rec_text = _ctc_greedy_decoder(preds, _worker_char_dict)
         rec_score = 0.95
 
-        if rec_text:
-            print(f"[OCR Worker PID {pid}] Decoded raw text for yolo_idx={original_yolo_idx}: '{rec_text}'")
-
         return original_yolo_idx, {
             'rec_text': rec_text, 'rec_score': rec_score,
             'pid': pid, 'duration': time.time() - start_time
@@ -97,7 +93,6 @@ def ocr_task_for_worker_process(task_data_tuple: Tuple[int, np.ndarray, Tuple[in
         print(f"[OCR Worker PID {pid}] ONNX OCR prediction FAILED for yolo_idx {original_yolo_idx}: {e}")
         return original_yolo_idx, {'rec_text': 'OCR_PREDICT_FAIL_IN_WORKER', 'rec_score': 0.0, 'pid': pid, 'duration': time.time() - start_time, 'error_msg': str(e)}
 
-# --- OcrHandler 类的其他部分保持不变 ---
 class OcrHandler:
     def __init__(self,
                  onnx_model_path: str,
@@ -127,32 +122,35 @@ class OcrHandler:
             self._initialize_serial_onnx_session()
 
     def _initialize_ocr_pool(self):
-        self.logger.info(f"OCR Handler: Initializing OCR processing pool with {self.num_workers} workers...")
+        self.logger.info(f"OCR Handler: Initializing ONNX OCR processing pool with {self.num_workers} workers...")
         try:
-            # [核心修复] 强制使用'spawn'模式来创建子进程。
-            # 这能确保在Linux/Docker环境中，每个子进程都有一个干净的、
-            # 不会与父进程资源冲突的全新环境，从而根除死锁问题。
-            # 我们不再需要 if os.name == 'nt' 的判断，因为'spawn'在所有平台都可用。
-            if multiprocessing.get_start_method(allow_none=True) != 'spawn':
-                multiprocessing.set_start_method('spawn', force=True)
+            # --- 最终修正：强制使用 'spawn' 模式来创建进程 ---
+            multiprocessing.set_start_method('spawn', force=True)
 
             self.ocr_processing_pool = multiprocessing.Pool(
                 processes=self.num_workers,
                 initializer=init_ocr_worker_process,
                 initargs=(self.onnx_model_path, self.keys_path)
             )
-            self.logger.info("OCR Handler: OCR processing pool initialized successfully with 'spawn' method.")
+            self.logger.info("OCR Handler: ONNX OCR processing pool initialized using 'spawn' method.")
         except Exception as e:
-            self.logger.critical(f"OCR Handler: Failed to create OCR pool: {e}", exc_info=True)
-            self.ocr_processing_pool = None
-
-# ocr_handler.py
+            self.logger.critical(f"OCR Handler: Failed to create ONNX OCR pool: {e}", exc_info=True)
+            self.ocr_processing_pool = None; self.num_workers = 1
+            self._initialize_serial_onnx_session()
 
     def _initialize_serial_onnx_session(self):
         self.logger.info("OCR Handler: Initializing ONNX OCR for serial processing...")
         try:
-            # --- 恢复：移除所有SessionOptions ---
-            self.serial_onnx_session = onnxruntime.InferenceSession(self.onnx_model_path, providers=['CPUExecutionProvider'])
+            # --- 最终修正：创建并配置SessionOptions，强制单线程顺序执行 ---
+            sess_options = onnxruntime.SessionOptions()
+            sess_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+            sess_options.intra_op_num_threads = 1
+
+            self.serial_onnx_session = onnxruntime.InferenceSession(
+                self.onnx_model_path,
+                sess_options=sess_options,
+                providers=['CPUExecutionProvider']
+            )
 
             char_list = []
             char_list.append("[blank]")

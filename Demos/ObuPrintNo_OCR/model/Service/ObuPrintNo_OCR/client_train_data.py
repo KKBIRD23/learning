@@ -9,8 +9,8 @@ import time
 # --- 1. 请在这里配置 ---
 
 # 您部署的OBU识别服务的地址
-# SERVER_URL_PREDICT = "http://127.0.0.1:5000/predict"
-SERVER_URL_PREDICT = "http://172.19.205.247:5000/predict"
+SERVER_URL_PREDICT = "http://127.0.0.1:5000/predict"
+# SERVER_URL_PREDICT = "http://172.19.205.247:5000/predict"
 
 # 包含您所有原始OBU图片的总文件夹路径 (可以有多个)
 # 脚本会自动递归扫描这些文件夹下所有的图片

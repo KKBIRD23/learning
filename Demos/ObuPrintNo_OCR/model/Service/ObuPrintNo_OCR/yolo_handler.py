@@ -1,4 +1,4 @@
-# yolo_handler.py
+# yolo_handler.py (FINAL VERSION)
 import cv2
 import numpy as np
 import onnxruntime
@@ -35,8 +35,18 @@ class YoloHandler:
     def _load_model(self):
         self.logger.info(f"YOLO Handler: 正在从 {self.model_path} 加载ONNX模型...")
         try:
-            # --- 恢复：移除所有SessionOptions，让ONNX在新环境下自由发挥 ---
-            self.onnx_session = onnxruntime.InferenceSession(self.model_path, providers=['CPUExecutionProvider'])
+            # --- 最终修正：创建并配置SessionOptions，强制单线程顺序执行 ---
+            # 这能彻底解决在cpuset受限环境下的性能问题和底层错误。
+            sess_options = onnxruntime.SessionOptions()
+            sess_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+            sess_options.intra_op_num_threads = 1
+
+            # 使用配置好的选项来创建会话
+            self.onnx_session = onnxruntime.InferenceSession(
+                self.model_path,
+                sess_options=sess_options,
+                providers=['CPUExecutionProvider']
+            )
 
             input_meta = self.onnx_session.get_inputs()[0]
             self.input_name = input_meta.name
@@ -204,11 +214,6 @@ class YoloHandler:
             final_x2 = int(np.clip(orig_x2, 0, orig_w))
             final_y2 = int(np.clip(orig_y2, 0, orig_h))
 
-            # Area filtering (已移到 detect 方法的末尾，对最终坐标进行)
-            # 这里先不进行面积筛选，因为坐标还是模型空间的相对值
-            # 面积筛选应该在坐标转换到原始图像空间后进行
-
-            # 转换为期望的字典格式
             cx_orig, cy_orig, w_orig, h_orig = get_box_center_and_dims([final_x1, final_y1, final_x2, final_y2])
             if cx_orig is not None: # 确保转换成功
                 processed_detections.append({
@@ -234,12 +239,10 @@ class YoloHandler:
             self.logger.error(f"YOLO Handler: ONNX inference failed: {e}", exc_info=True)
             return []
 
-        # Postprocess to get detections in original image space
         detections_before_area_filter = self._postprocess_outputs(
             raw_outputs, original_shape_hw, resize_ratio, pad_x, pad_y
         )
 
-        # Apply area filtering as a final step
         final_filtered_detections = []
         if detections_before_area_filter:
             orig_h_img, orig_w_img = original_shape_hw
@@ -248,14 +251,11 @@ class YoloHandler:
                 max_area_threshold_px = (orig_h_img * orig_w_img) * self.max_area_factor
 
             for i_det, det in enumerate(detections_before_area_filter):
-                # 'w' and 'h' are already in original image scale
                 area = det['w'] * det['h']
 
                 if area < self.min_area_px:
-                    # self.logger.debug(f"YOLO Handler: Box area {area} < min_area {self.min_area_px}, filtered.")
                     continue
                 if area > max_area_threshold_px:
-                    # self.logger.debug(f"YOLO Handler: Box area {area} > max_area {max_area_threshold_px}, filtered.")
                     continue
 
                 det['original_index'] = len(final_filtered_detections) # Assign index after filtering
