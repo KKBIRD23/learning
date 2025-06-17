@@ -1,10 +1,11 @@
 # docker-compose.prod.yml (FINAL - Original Architecture)
-version: '3.8'
-
 services:
   obu-ocr-app:
     # 使用脚本中定义的、经过测试的版本
     image: obu-ocr-service:${IMAGE_VERSION}
+
+    # 杜绝任何网络连接尝试
+    pull_policy: never
 
     container_name: obu-ocr-container-prod
     restart: always
