@@ -91,6 +91,26 @@ graph TD
 
 ### 4. API接口文档
 
+### 交互流程图 (Sequence Diagram)
+
+这张图清晰地展示了客户端与服务端之间的“对话”流程：
+
+```mermaid
+sequenceDiagram
+    participant Client as 客户端App
+    participant Server as 服务端
+    
+    Client->>Client: 1. 生成唯一的 session_id
+    loop 持续扫描
+        Client->>Server: 2. POST /predict (携带 session_id 和图片)
+        Server-->>Client: 3. 返回JSON (包含确信/待定列表和标注图)
+        Client->>Client: 4. 更新界面 (显示列表和标注图)
+    end
+    Client->>Server: 5. POST /session/finalize (携带 session_id)
+    Server-->>Client: 6. 返回JSON (包含最终完整列表)
+    Client->>Client: 7. 展示最终报告给用户
+```
+
 #### **1. 核心交互流程 (两步走)**
 
 前端应用与后端服务的交互，主要为两步：
@@ -126,6 +146,58 @@ graph TD
   ```
   
   
+  
+  **响应字段详解**:
+  
+  - confirmed_results (**绿灯**): “确信列表”。这些是服务器已经多次看到、非常有信心的结果。你可以用醒目的绿色来展示它们。
+  - pending_results (**黄灯**): “待定列表”。这些是服务器只看到一次，还希望再确认一下的结果。你可以用黄色来展示它们，提示操作员可以对这些区域进行补拍。
+  - current_frame_annotated_image_base64: 这是一个Base64编码的JPEG图片字符串。你需要将它解码并展示在界面上。图片中的高亮色块含义：
+    - **绿色**: 本次识别成功，且已进入“确信”或“待定”列表。
+    - **红色**: 本次识别失败（可能是模糊、反光等原因）。
+  
+  **响应体字段说明**:
+  
+  | 字段名                               | 类型          | 描述                                                         |
+  | ------------------------------------ | ------------- | ------------------------------------------------------------ |
+  | session_status                       | string        | 当前会话的状态，固定为 "in_progress"。                       |
+  | confirmed_results                    | array[object] | **确信结果列表**。这些OBU码已被多次成功识别，置信度高。建议在UI中以明确的成功状态（如绿色）展示。 |
+  | confirmed_results[].text             | string        | 已确信的16位OBU码。                                          |
+  | confirmed_results[].count            | integer       | 该OBU码在当前会话中被成功识别的累计次数。                    |
+  | pending_results                      | array[object] | **待定结果列表**。这些OBU码当前仅被成功识别一次，置信度较低，有待进一步确认。建议在UI中以警告或中间状态（如黄色）展示，提示操作员可对相应区域进行补拍以提升置信度。 |
+  | pending_results[].text               | string        | 待定的16位OBU码。                                            |
+  | pending_results[].count              | integer       | 该OBU码被成功识别的次数，对于待定列表，此值恒为1。           |
+  | current_frame_annotated_image_base64 | string        | 本次上传图像的处理结果标注图，采用Base64编码的JPEG格式。客户端需解码后展示，为操作员提供直观的视觉反馈。图像中的高亮色块含义与confirmed_results和识别失败状态对应。 |
+  
+  **可以直接使用的JavaScript代码范例 (fetch API)**:
+  
+  ```
+  async function uploadImage(sessionId, imageFile) {
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    formData.append('file', imageFile, imageFile.name); // 'file' 必须是字段名
+  
+    try {
+      const response = await fetch('http://<服务器地址>:5000/predict', {
+        method: 'POST',
+        body: formData, // 使用 FormData 时，浏览器会自动设置正确的 Content-Type
+      });
+  
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+  
+      const result = await response.json();
+      console.log('识别成功:', result);
+      // 在这里更新你的UI，展示 confirmed_results, pending_results, 和解码后的图片
+      // 例如：const annotatedImageSrc = 'data:image/jpeg;base64,' + result.current_frame_annotated_image_base64;
+      
+    } catch (error) {
+      console.error('上传失败:', error);
+    }
+  }
+  ```
+  
+  
 
 #### 4.2. 会话终审接口 (/session/finalize)
 
@@ -150,7 +222,49 @@ graph TD
   }
   ```
 
+
+**响应字段详解**:
+
+- total_count: 本次会话最终识别出的OBU总数。
+- final_results: 最终的、去重后的、完整的OBU列表。它包含了所有被识别出的号码，无论之前是“确信”还是“待定”。这是需要最终呈现给用户并保存的结果。
+
+- **可以直接使用的JavaScript代码范例 (fetch API)**:
+
+  ```
+  async function finalizeSession(sessionId) {
+    try {
+      const response = await fetch('http://<服务器地址>:5000/session/finalize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
   
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+  
+      const finalReport = await response.json();
+      console.log('最终报告:', finalReport);
+      // 在这里展示 finalReport.final_results 列表给用户
+      
+    } catch (error) {
+      console.error('获取最终报告失败:', error);
+    }
+  }
+  ```
+
+**响应体字段说明**:
+
+| 字段名                | 类型          | 描述                                                         |
+| --------------------- | ------------- | ------------------------------------------------------------ |
+| message               | string        | 操作成功的提示信息。                                         |
+| session_id            | string        | 已终审并清理的会话ID。                                       |
+| total_count           | integer       | 本次会话最终识别出的去重后的OBU码总数。                      |
+| final_results         | array[object] | **最终结果清单**。此列表包含了会话中所有被识别出的OBU码，是最终需要呈现给用户并归档的数据。 |
+| final_results[].text  | string        | 16位OBU码。                                                  |
+| final_results[].count | integer       | 该OBU码在整个会话中被成功识别的总次数。                      |
 
 #### 4.3. 智能健康检查接口 (/health)（前端不用管这个）
 

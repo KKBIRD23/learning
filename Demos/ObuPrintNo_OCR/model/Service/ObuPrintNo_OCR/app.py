@@ -352,6 +352,13 @@ def finalize_session_route():
 @app.route('/predict', methods=['POST'])
 def predict_image_route():
     logger = current_app.logger
+
+    # --- 新增：终极诊断日志 ---
+    # 打印出请求中所有的表单数据和文件信息，让我们看看到底收到了什么
+    logger.info(f"收到的表单数据 (request.form): {request.form}")
+    logger.info(f"收到的文件信息 (request.files): {request.files}")
+    # ---------------------------
+
     session_id = request.form.get('session_id')
     if not session_id:
         return jsonify({"error": "session_id is required"}), 400
@@ -450,39 +457,36 @@ def cleanup_on_exit():
         print("应用退出，正在关闭数据库连接池...")
         db_handler.close_pool()
 
+# 首先，进行最底层的Oracle客户端初始化
+try:
+    if platform.system() != "Windows":
+        oracledb.init_oracle_client(lib_dir="/opt/oracle/instantclient_21_13")
+        print("Oracle Client (Thick Mode) initialized for Linux/Docker.")
+    else:
+        print("Running on Windows, using default 'Thin Mode' for Oracle connection.")
+except Exception as e:
+    print(f"CRITICAL: Failed to initialize Oracle Client: {e}")
+    exit(1)
+
+# 然后，设置日志系统
+setup_logging(app)
+
+# 接着，调用初始化函数，准备好所有核心处理器
+initialize_global_handlers(app.logger)
+
+# 最后，注册清理函数和启动后台线程
+atexit.register(cleanup_on_exit)
+cleanup_thread = threading.Thread(target=cleanup_expired_sessions, daemon=True)
+cleanup_thread.start()
+app.logger.info("后台会话清理线程已启动。")
+
+# -----------------------------------------------------------------------------------
+# 3. 生产模式启动器：这个块现在只负责一件事——用Waitress启动服务。
+# -----------------------------------------------------------------------------------
 if __name__ == '__main__':
-    # --- 核心修正：根据操作系统智能初始化Oracle客户端 ---
-    try:
-        # 判断当前操作系统是否不是Windows (即，是我们用于生产的Linux Docker环境)
-        if platform.system() != "Windows":
-            # 如果是Linux，则执行我们为Docker准备的、强制的“厚模式”初始化
-            oracledb.init_oracle_client(lib_dir="/opt/oracle/instantclient_21_13")
-            print("Oracle Client (Thick Mode) initialized for Linux/Docker.")
-        else:
-            # 如果是Windows，我们什么都不做。
-            # 这将让 oracledb 库自动使用默认的“瘦模式”，它不需要安装任何客户端。
-            # 这就恢复了您之前在Windows上可以正常运行的状态。
-            print("Running on Windows, using default 'Thin Mode' for Oracle connection.")
-
-    except Exception as e:
-        print(f"CRITICAL: Failed to initialize Oracle Client: {e}")
-        exit(1)
-
-    # --- 后续所有启动步骤保持不变 ---
-    setup_logging(app)
-    try:
-        initialize_global_handlers(app.logger)
-    except Exception as e_init:
-        app.logger.critical(f"应用启动失败，无法初始化核心处理器: {e_init}")
-        exit(1)
-
-    atexit.register(cleanup_on_exit)
-    cleanup_thread = threading.Thread(target=cleanup_expired_sessions, daemon=True)
-    cleanup_thread.start()
-    app.logger.info("后台会话清理线程已启动。")
-
-    if not os.path.exists(config.UPLOAD_FOLDER):
-        os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
+    # 检查并创建必要的目录
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     if not os.path.exists(config.PROCESS_PHOTO_DIR):
         os.makedirs(config.PROCESS_PHOTO_DIR, exist_ok=True)
 
