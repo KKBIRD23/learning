@@ -53,7 +53,9 @@ tar -czvf ${FINAL_BUNDLE_NAME} \
     config.py \
     docker-compose.prod.yml \
     start_prod.sh \
+    load_img.py \
     version.txt \
+    model \
     .env
 if [ $? -ne 0 ]; then
   echo -e "\033[0;31m错误: 最终交付包创建失败！\033[0m"

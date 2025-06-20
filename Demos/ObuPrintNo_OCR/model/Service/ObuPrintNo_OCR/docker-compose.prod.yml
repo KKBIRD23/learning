@@ -1,9 +1,9 @@
 # docker-compose.prod.yml (FINAL - Original Architecture)
+
 services:
   obu-ocr-app:
-    # 使用脚本中定义的、经过测试的版本
-    image: obu-ocr-service:${IMAGE_VERSION}
-
+    # 镜像版本将由 ops_menu.sh 脚本根据 version.txt 自动更新
+    image: obu-ocr-service:v1.0
     # 杜绝任何网络连接尝试
     pull_policy: never
 
@@ -12,15 +12,17 @@ services:
     ports:
       - "5000:5000"
 
-    # 资源限制：现在所有的资源都分配给这一个服务
-    cpuset: '${APP_CORES_CPUSET}'
-    mem_limit: '${APP_MEM_LIMIT}'
-    mem_reservation: '${APP_MEM_RESERVATION}'
+    # --- 资源限制建议 (由运维根据实际情况决定是否启用) ---
+    # 对于8核CPU，建议分配7个核心 (N-1原则)，以保证系统响应性
+    cpuset: '0-6'
+
+    # 对于16GB内存，建议预留8G，上限12G
+    mem_reservation: 8g
+    mem_limit: 12g
 
     # 挂载配置文件和数据卷
     volumes:
       - ./config.py:/app/config.py
-      - ./model:/app/model:ro
       - ./uploads:/app/uploads
       - ./process_photo:/app/process_photo
       - ./log:/app/log

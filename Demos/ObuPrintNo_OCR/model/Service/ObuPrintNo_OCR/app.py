@@ -55,7 +55,12 @@ def setup_logging(app_instance):
     file_handler = RotatingFileHandler(
         log_file_path, maxBytes=config.LOG_FILE_MAX_BYTES,
         backupCount=config.LOG_FILE_BACKUP_COUNT, encoding='utf-8')
-    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]')
+
+    # --- 核心修正：定义一个精确到毫秒的、24小时制的专业日志格式 ---
+    formatter = logging.Formatter(
+        '%(asctime)s.%(msecs)03d %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
     file_handler.setFormatter(formatter)
 
     log_level_from_config = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
@@ -279,6 +284,7 @@ def cleanup_expired_sessions():
 @app.route('/health', methods=['GET'])
 def health_check_route():
     logger = current_app.logger
+    logger.info("接收到 /health 健康检查请求。")
     status_code = 200
     response = {"status": "ok", "checks": {}}
     # 1. 检查数据库连接池
@@ -310,6 +316,8 @@ def health_check_route():
 @app.route('/refresh-cache', methods=['POST'])
 def refresh_cache_route():
     logger = current_app.logger
+    logger.info("接收到 /refresh-cache 缓存刷新请求。")
+
     provided_key = request.headers.get('X-API-KEY')
     if provided_key != config.REFRESH_API_KEY:
         return jsonify({"error": "Invalid or missing API Key"}), 403
@@ -333,7 +341,7 @@ def finalize_session_route():
     if not data or 'session_id' not in data:
         return jsonify({"error": "session_id is required in JSON body"}), 400
     session_id = data['session_id']
-    logger.info(f"会话 {session_id}: 接收到终审请求。")
+    logger.info(f"接收到 /session/finalize 终审请求, 会话ID: {session_id}")
     with CACHE_LOCK: session = session_data_store.get(session_id)
     if not session:
         return jsonify({"error": "Session not found"}), 404
@@ -352,6 +360,11 @@ def finalize_session_route():
 @app.route('/predict', methods=['POST'])
 def predict_image_route():
     logger = current_app.logger
+
+    # --- 新增：在所有逻辑开始前，先记录接口被调用 ---
+    session_id_from_form = request.form.get('session_id', 'N/A')
+    filename_from_form = request.files.get('file').filename if 'file' in request.files else 'N/A'
+    logger.info(f"接收到 /predict 请求, 会话ID: {session_id_from_form}, 文件名: {filename_from_form}")
 
     # --- 新增：终极诊断日志 ---
     # 打印出请求中所有的表单数据和文件信息，让我们看看到底收到了什么
@@ -433,6 +446,7 @@ def predict_image_route():
 
 # --- 应用初始化与启动 ---
 def initialize_global_handlers(app_logger):
+    # 这个函数现在只负责初始化，不再负责启动，所以保持原样是安全的
     global yolo_predictor, ocr_predictor, db_handler, VALID_OBU_CODES_CACHE
     app_logger.info("--- 开始初始化全局处理器 ---")
     try:
@@ -449,6 +463,7 @@ def initialize_global_handlers(app_logger):
         raise
 
 def cleanup_on_exit():
+    # 这个函数也保持原样
     global ocr_predictor, db_handler
     if ocr_predictor and hasattr(ocr_predictor, 'close_pool'):
         print("应用退出，正在关闭OCR处理池...")
@@ -457,38 +472,52 @@ def cleanup_on_exit():
         print("应用退出，正在关闭数据库连接池...")
         db_handler.close_pool()
 
-# 首先，进行最底层的Oracle客户端初始化
-try:
-    if platform.system() != "Windows":
-        oracledb.init_oracle_client(lib_dir="/opt/oracle/instantclient_21_13")
-        print("Oracle Client (Thick Mode) initialized for Linux/Docker.")
-    else:
-        print("Running on Windows, using default 'Thin Mode' for Oracle connection.")
-except Exception as e:
-    print(f"CRITICAL: Failed to initialize Oracle Client: {e}")
-    exit(1)
-
-# 然后，设置日志系统
-setup_logging(app)
-
-# 接着，调用初始化函数，准备好所有核心处理器
-initialize_global_handlers(app.logger)
-
-# 最后，注册清理函数和启动后台线程
-atexit.register(cleanup_on_exit)
-cleanup_thread = threading.Thread(target=cleanup_expired_sessions, daemon=True)
-cleanup_thread.start()
-app.logger.info("后台会话清理线程已启动。")
-
 # -----------------------------------------------------------------------------------
-# 3. 生产模式启动器：这个块现在只负责一件事——用Waitress启动服务。
+# 【核心修正】将所有“执行”逻辑，全部放回 if __name__ == '__main__' 的保护之下
 # -----------------------------------------------------------------------------------
 if __name__ == '__main__':
-    # 检查并创建必要的目录
+    # 1. 初始化Oracle客户端 (保持不变)
+    try:
+        if platform.system() != "Windows":
+            oracledb.init_oracle_client(lib_dir="/opt/oracle/instantclient_21_13")
+            print("Oracle Client (Thick Mode) initialized for Linux/Docker.")
+        else:
+            print("Running on Windows, using default 'Thin Mode' for Oracle connection.")
+    except Exception as e:
+        print(f"CRITICAL: Failed to initialize Oracle Client: {e}")
+        exit(1)
+
+    # 2. 设置日志系统 (保持不变)
+    setup_logging(app)
+
+    # 3. 初始化所有核心处理器 (保持不变)
+    try:
+        initialize_global_handlers(app.logger)
+    except Exception as e_init:
+        app.logger.critical(f"应用启动失败，无法初始化核心处理器: {e_init}")
+        exit(1)
+
+    # 4. 注册清理和后台任务 (保持不变)
+    atexit.register(cleanup_on_exit)
+    cleanup_thread = threading.Thread(target=cleanup_expired_sessions, daemon=True)
+    cleanup_thread.start()
+    app.logger.info("后台会话清理线程已启动。")
+
+    # 5. 检查目录 (保持不变)
     if not os.path.exists(app.config['UPLOAD_FOLDER']):
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     if not os.path.exists(config.PROCESS_PHOTO_DIR):
         os.makedirs(config.PROCESS_PHOTO_DIR, exist_ok=True)
 
-    app.logger.info(f"服务版本 {config.APP_VERSION} 启动中... 使用生产级服务器 Waitress。")
+    # -----------------------------------------------------------------------------------
+    # 【核心修正】将Waitress的日志与Flask日志系统集成，以获得接入日志
+    # -----------------------------------------------------------------------------------
+    waitress_logger = logging.getLogger('waitress')
+    waitress_logger.setLevel(logging.INFO)
+    for handler in app.logger.handlers:
+        waitress_logger.addHandler(handler)
+    # -----------------------------------------------------------------------------------
+
+    # 6. 最后，以生产模式启动 Waitress 服务器
+    app.logger.info(f"服务版本 {config.APP_VERSION} 启动中... 使用高性能生产服务器 Waitress。")
     serve(app, host='0.0.0.0', port=5000)

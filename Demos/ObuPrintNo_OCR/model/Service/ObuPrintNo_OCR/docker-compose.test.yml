@@ -1,26 +1,18 @@
-version: '3.8'
+# docker-compose.test.yml (v3.0 - Dev Environment)
 
 services:
   obu-ocr-app:
-    # 使用我们设计的版本化命名
+    # 在开发时，我们通常使用build来实时构建，或者使用一个固定的基础镜像
     build: .
-    image: obu-ocr-service:${IMAGE_VERSION:-latest}
-
+    image: obu-ocr-service-dev:v3.0
     container_name: obu-ocr-container-dev
     restart: unless-stopped
     ports:
       - "5000:5000"
 
     volumes:
-      # 挂载代码以实现热重载，这是开发模式的核心
-      - ./config.py:/app/config.py
-      - ./app.py:/app/app.py
-      - ./yolo_handler.py:/app/yolo_handler.py
-      - ./ocr_handler.py:/app/ocr_handler.py
-      - ./model:/app/model:ro
-      - ./uploads:/app/uploads
-      - ./process_photo:/app/process_photo
-      - ./log:/app/log
+      # 开发模式的核心：挂载所有代码和配置，实现热重载
+      - .:/app
 
     # 注入环境变量，用于连接数据库
     env_file:
