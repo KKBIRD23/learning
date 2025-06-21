@@ -189,39 +189,56 @@ def process_image_with_ocr_logic(
         raw_ocr_pool_results = ocr_predictor.recognize_prepared_tasks(ocr_tasks_for_pool)
         final_ocr_results_list = ocr_predictor.consolidate_ocr_results(raw_ocr_pool_results, ocr_input_metadata)
         timing_profile['3_ocr_processing'] = time.time() - t_step
+
         logger.info(f"{log_prefix} 执行V19.0最终裁决与证据累积流程。")
         t_step_adjudication = time.time()
         evidence_pool = session.get("evidence_pool", {})
         with CACHE_LOCK: local_valid_codes = VALID_OBU_CODES_CACHE.copy()
         analysis_context = analyze_evidence_pool(evidence_pool)
         logger.info(f"{log_prefix} 情景分析: 混沌模式={analysis_context['is_chaotic']}, "
-                    f"纯净满溢={analysis_context['is_pure_and_full']}, "
+                    f"纯净满溢={analysis_context.get('is_pure_and_full', False)}, "
                     f"识别号段数={len(analysis_context['segments'])}")
+
+        # --- 【核心修正】将裁决、证据累积、和“法证日志”记录，整合到一个循环中 ---
+        newly_added_codes = []
         for ocr_item in final_ocr_results_list:
-            if not ocr_item: continue
+            if not ocr_item:
+                ocr_item = {'status': 'failed_empty_item'}
+                continue
+
             raw_text = ocr_item.get("ocr_final_text", "").strip()
             corrected_candidates = extract_and_correct_candidates(raw_text, logger)
             if not corrected_candidates:
                 ocr_item['status'] = 'failed_extraction'
                 continue
+
             final_candidate = None
             for cand in corrected_candidates:
                 if cand not in local_valid_codes: continue
                 if adjudicate_candidate(cand, analysis_context, logger):
                     final_candidate = cand
                     break
+
             if final_candidate:
+                # 检查是否是新成员，如果是，则记录到“法证日志”列表中
                 if final_candidate not in evidence_pool:
-                    evidence_pool[final_candidate] = {"count": 0, "first_seen_frame": current_frame_num}
+                    newly_added_codes.append(final_candidate)
+
+                # 执行唯一的、正确的证据累积
+                evidence_pool.setdefault(final_candidate, {"count": 0, "first_seen_frame": current_frame_num})
                 evidence_pool[final_candidate]["count"] += 1
                 evidence_pool[final_candidate]["last_seen_frame"] = current_frame_num
+
                 ocr_item['status'] = 'pending'
                 if evidence_pool[final_candidate]["count"] >= config.PROMOTION_THRESHOLD:
                     ocr_item['status'] = 'confirmed'
                 ocr_item['final_corrected_text'] = final_candidate
             else:
                 ocr_item['status'] = 'failed_adjudication'
+
         session["evidence_pool"] = evidence_pool
+
+        # 构造确信和待定列表的逻辑保持不变...
         confirmed_results_list, pending_results_list = [], []
         map_code_to_ocr_item = {item['final_corrected_text']: item for item in final_ocr_results_list if 'final_corrected_text' in item}
         for obu_code, evidence in sorted(evidence_pool.items()):
@@ -232,6 +249,11 @@ def process_image_with_ocr_logic(
                 ocr_item_ref = map_code_to_ocr_item.get(obu_code)
                 if ocr_item_ref: item_to_add['box'] = ocr_item_ref.get('bbox_yolo_abs')
                 pending_results_list.append(item_to_add)
+
+        # --- “法证”日志输出 ---
+        if newly_added_codes:
+            logger.info(f"{log_prefix} [法证日志] 本帧新增OBU码({len(newly_added_codes)}个): {sorted(newly_added_codes)}")
+
         logger.info(f"{log_prefix} 证据累积完成。确信: {len(confirmed_results_list)} 个, 待定: {len(pending_results_list)} 个。")
         if config.SAVE_PROCESS_PHOTOS:
             annotated_img_full_size = draw_ocr_results_on_image(original_image, yolo_detections, final_ocr_results_list)
