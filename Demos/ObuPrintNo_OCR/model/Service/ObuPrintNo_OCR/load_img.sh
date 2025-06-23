@@ -95,13 +95,21 @@ display_menu() {
     echo -e "${GREEN}=====================================================${NC}"
 }
 
-# 1. 部署新版本 (完整恢复您的原始逻辑)
+# 1. 部署新版本 (v2.5 - 增加了自动清理功能)
 deploy_new_version() {
     echo "--- 1. 解包、加载并配置新版本 ---"
     local deploy_package_pattern="OBU-OCR-DEPLOY-v*.tar.gz"
     local image_file_pattern="obu-ocr-service-v*.tar"
+    local env_backup_file=".env.prod_backup_$(date +%s)" # 增加时间戳，确保备份唯一
 
-    # --- 阶段一: 选择并解压部署包 ---
+    # --- 阶段一: 备份现有的生产 .env 文件 ---
+    if [ -f ".env" ]; then
+        echo "检测到现有的 .env 文件，正在进行安全备份..."
+        cp -f .env "${env_backup_file}"
+        echo -e "${GREEN}.env 文件已成功备份到 ${env_backup_file}${NC}"
+    fi
+
+    # --- 阶段二: 选择并解压部署包 ---
     echo "正在搜索部署包 (${deploy_package_pattern})..."
     mapfile -t packages < <(find . -maxdepth 1 -name "${deploy_package_pattern}" | sort -V)
     if (( ${#packages[@]} == 0 )); then
@@ -115,7 +123,15 @@ deploy_new_version() {
     fi
     echo -e "${GREEN}部署包解压成功！${NC}"
 
-    # --- 阶段二: 读取版本号并更新Compose文件 (恢复您的核心逻辑) ---
+    # --- 阶段三: 从备份恢复生产 .env 文件 ---
+    if [ -f "${env_backup_file}" ]; then
+        echo "正在从备份恢复生产环境的 .env 文件..."
+        cp -f "${env_backup_file}" .env
+        rm -f "${env_backup_file}" # 清理临时的备份文件
+        echo -e "${GREEN}.env 文件已成功恢复。${NC}"
+    fi
+
+    # --- 阶段四: 读取版本号并更新Compose文件 ---
     local version_file="version.txt"
     if [ ! -f "$version_file" ]; then
         echo -e "${RED}错误: 解压后未找到版本文件 'version.txt'。${NC}"; return 1;
@@ -131,7 +147,7 @@ deploy_new_version() {
     fi
     echo -e "${GREEN}${COMPOSE_FILE} 更新成功！${NC}"
 
-    # --- 阶段三: 加载镜像文件 ---
+    # --- 阶段五: 加载镜像文件 ---
     mapfile -t images < <(find . -maxdepth 1 -name "${image_file_pattern}" | sort -V)
     if (( ${#images[@]} == 0 )); then
         echo -e "${RED}错误: 解压后未找到镜像文件。${NC}"; return 1;
@@ -142,6 +158,22 @@ deploy_new_version() {
         echo -e "${RED}错误: 加载Docker镜像失败！${NC}"; return 1;
     fi
     echo -e "${GREEN}镜像加载成功！新版本部署准备就绪。${NC}"
+
+    # ==============================================================================
+    # 【核心新增】部署成功后，进行交互式清理
+    # ==============================================================================
+    echo "-----------------------------------------------------"
+    read -p "新版本已成功加载。是否要清理本次使用的部署包和镜像包? (y/n): " -n 1 -r
+    echo # 换行
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "正在清理文件: ${chosen_package} 和 ${chosen_image}..."
+        rm -f "${chosen_package}" "${chosen_image}"
+        echo -e "${GREEN}清理完成。${NC}"
+    else
+        echo -e "${YELLOW}已跳过清理。部署包和镜像包仍保留在当前目录。${NC}"
+    fi
+    # ==============================================================================
+
     echo -e "${YELLOW}请使用菜单选项 '3. 启动/更新服务' 来应用新版本。${NC}"
 }
 
