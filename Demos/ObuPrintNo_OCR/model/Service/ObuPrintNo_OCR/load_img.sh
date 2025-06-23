@@ -2,11 +2,6 @@
 
 # ==============================================================================
 # OBU-OCR 服务 - 交互式运维菜单脚本 (v2.4 - 最终交付版)
-#
-# 设计哲学:
-# - 完全遵照王经理的设计，保留所有核心自动化逻辑。
-# - 增加环境兼容性与配置预警，作为“安全护栏”而非“决策者”。
-# - 提供清晰、美观、专业的交互界面。
 # ==============================================================================
 
 # 脚本出错时立刻停止
@@ -157,7 +152,7 @@ stop_service() {
 
 # 3. 启动/更新服务
 start_service() {
-    echo "--- 3. 启动/更新服务 ---"; sudo $COMPOSE_CMD -f ${COMPOSE_FILE} up -d --remove-orphans; echo -e "${GREEN}启动指令已发送！${NC}"; sleep 3; echo "当前服务状态："; sudo $COMPOSE_CMD -f ${COMPOSE_FILE} ps;
+    echo "--- 3. 启动/更新服务 ---"; sudo $COMPOSE_CMD -f ${COMPOSE_FILE} up --remove-orphans; echo -e "${GREEN}启动指令已发送！${NC}"; sleep 3; echo "当前服务状态："; sudo $COMPOSE_CMD -f ${COMPOSE_FILE} ps;
 }
 
 # 4. 清理镜像

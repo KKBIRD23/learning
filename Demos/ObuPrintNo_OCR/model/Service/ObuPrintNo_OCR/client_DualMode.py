@@ -12,10 +12,11 @@ import base64
 # --- 配置 ---
 SERVER_URL_PREDICT = "http://127.0.0.1:5000/predict"      # 本机测试地址
 SERVER_URL_FINALIZE = "http://127.0.0.1:5000/session/finalize"    # 本机测试地址
-# SERVER_URL_PREDICT = "http://172.19.205.247:5000/predict"    #   本机Docker测试地址
-# SERVER_URL_FINALIZE = "http://172.19.205.247:5000/session/finalize"  #   本机Docker测试地址
+SERVER_URL__REFRESH = "http://127.0.0.1:5000/refresh-cache"  # 本机测试地址
 # SERVER_URL_PREDICT = "http://172.16.252.18:5000/predict"    #   生产测试环境
 # SERVER_URL_FINALIZE = "http://172.16.252.18:5000/session/finalize"  #   生产测试环境
+# SERVER_URL__REFRESH = "http://172.16.252.18:5000/refresh-cache"  #   生产测试环境
+
 # 请将这里的路径指向您要测试的图片文件夹
 IMAGE_PATHS_TO_UPLOAD = [
     r"../../../../DATA/PIC/1pic/1/1.jpg",
@@ -130,11 +131,57 @@ def finalize_session(session_id_to_finalize: str):
         print(f"客户端：请求终审接口时发生网络请求错误: {e}")
         return None
 
-if __name__ == "__main__":
-    current_batch_session_id = str(uuid.uuid4())
-    print(f"客户端：开始新的扫描会话，ID: {current_batch_session_id}")
-    print(f"客户端：本次会话将使用 V8.0 最终版引擎。")
+def refresh_server_cache(api_key: str):
+    """
+    调用 /refresh-cache 接口来触发服务端的缓存刷新。
+    """
 
+    print("\n" + "="*40)
+    print(f"客户端：正在调用缓存刷新接口...")
+    print("="*40)
+
+    try:
+        # --- 核心：在请求头中加入 X-API-KEY ---
+        headers = {
+            'X-API-KEY': api_key
+        }
+
+        # 发送POST请求，不需要任何请求体
+        response = requests.post(SERVER_URL__REFRESH, headers=headers, timeout=10)
+
+        print(f"客户端：缓存刷新接口状态码: {response.status_code}")
+
+        # 检查响应内容
+        try:
+            response_json = response.json()
+            print(f"  服务端消息: {response_json.get('message')}")
+            if response.status_code == 202:
+                print("  操作成功：服务端已接受刷新任务，并将在后台执行。")
+            elif response.status_code == 200:
+                 print(f"  操作成功：缓存已同步刷新。新数量: {response_json.get('count')}")
+            else:
+                print(f"  操作失败详情: {response_json.get('error')}")
+
+        except requests.exceptions.JSONDecodeError:
+            print(f"  服务端返回了非JSON格式的响应: {response.text}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"客户端：请求缓存刷新接口时发生网络错误: {e}")
+
+if __name__ == "__main__":
+    # --- 步骤 1: 定义会话和安全密钥 ---
+    current_batch_session_id = str(uuid.uuid4())
+    # 请确保这个API密钥与您服务端 config.py 中 REFRESH_API_KEY 的值一致
+    API_KEY_TO_USE = "Vfj@1234.wq"
+
+    print(f"客户端：开始新的扫描会话，ID: {current_batch_session_id}")
+
+    # --- 步骤 2: (可选) 在扫描前，先触发一次缓存刷新 ---
+    # 您可以取消下面这行代码的注释，来测试刷新功能
+    # refresh_server_cache(API_KEY_TO_USE)
+    # input("缓存刷新请求已发送，按回车开始图片识别...")
+
+    # --- 步骤 3: 循环发送图片 ---
     frame_count = 0
     for img_path in IMAGE_PATHS_TO_UPLOAD:
         frame_count += 1
@@ -153,10 +200,13 @@ if __name__ == "__main__":
 
         if frame_count < len(IMAGE_PATHS_TO_UPLOAD):
             print("-" * 30)
-            # input("按回车发送下一张...") # 可以取消注释来手动控制节奏
 
-    # 所有图片发送完毕后，调用终审接口
+    # --- 步骤 4: 调用终审接口 ---
     finalize_session(current_batch_session_id)
+
+    # --- 步骤 5:(可选)在所有操作后，再次触发缓存刷新进行测试 ---
+    # 可以取消下面这行代码的注释，来再次测试刷新功能
+    refresh_server_cache(API_KEY_TO_USE)
 
     cv2.destroyAllWindows()
     print("\n客户端测试完成。")
