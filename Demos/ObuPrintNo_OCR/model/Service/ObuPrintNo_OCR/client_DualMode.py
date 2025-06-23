@@ -18,10 +18,10 @@ SERVER_URL_FINALIZE = "http://127.0.0.1:5000/session/finalize"    # 本机测试
 # SERVER_URL_FINALIZE = "http://172.16.252.18:5000/session/finalize"  #   生产测试环境
 # 请将这里的路径指向您要测试的图片文件夹
 IMAGE_PATHS_TO_UPLOAD = [
-    r"../../../../DATA/PIC/1pic/2/1.jpg",
-    r"../../../../DATA/PIC/1pic/2/2.jpg",
-    r"../../../../DATA/PIC/1pic/2/3.jpg",
-    r"../../../../DATA/PIC/1pic/2/4.jpg"
+    r"../../../../DATA/PIC/1pic/1/1.jpg",
+    r"../../../../DATA/PIC/1pic/1/2.jpg",
+    r"../../../../DATA/PIC/1pic/1/3.jpg",
+    r"../../../../DATA/PIC/1pic/1/4.jpg"
 ]
 
 # --- 辅助函数：显示Base64编码的图像 ---
