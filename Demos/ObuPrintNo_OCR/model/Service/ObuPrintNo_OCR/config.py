@@ -1,4 +1,4 @@
-# config.py (V18.1_Final_Adjudication)
+# config.py (V20.0_Final_Engine)
 
 import os
 
@@ -10,7 +10,20 @@ ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "yolo", "Barcode_dynam
 OCR_ONNX_MODEL_PATH = os.path.join(BASE_PROJECT_DIR, "model", "ppocr-v5", "inference.onnx")
 OCR_KEYS_PATH = os.path.join(BASE_PROJECT_DIR, "model", "ppocr-v5", "keys.txt")
 
-# ================== 核心裁决引擎配置 (V18.1) ==================
+# ================== 核心裁决引擎配置 (V20.0) ==================
+# --- 【新增】识别模式与交互配置 ---
+# 默认的识别模式,  full_plate——整版识别, scattered——零散识别
+RECOGNITION_MODE_FULL_PLATE = 'full_plate'  # 整版识别模式
+RECOGNITION_MODE_SCATTERED = 'scattered'    # 零散识别模式
+DEFAULT_RECOGNITION_MODE = RECOGNITION_MODE_SCATTERED
+
+# 在“整版识别”模式下，我们期望的、最终要输出的OBU码的精确数量。
+EXPECTED_OBU_COUNT = 50
+
+# 在“整版识别”模式下，当首帧识别出2个号段时，如果它们的成员数量之差小于或等于此阈值，则触发“人工仲裁”。
+# 例如，设为2，如果两个号段分别有5个和4个成员，则 (5-4) <= 2，触发仲裁。
+SEGMENT_AMBIGUITY_THRESHOLD = 2
+
 # --- 预处理与净化 ---
 ENABLE_OCR_CORRECTION = True
 # 这个列表现在应该更保守，只包含高置信度的替换
@@ -191,4 +204,4 @@ SCATTERED_MODE_IMAGE_JPG_QUALITY = 75
 SAVE_SCATTERED_ANNOTATED_IMAGE = True
 
 # --- 版本号 ---
-APP_VERSION = "v18.1_Final"
+APP_VERSION = "v20.0_Final_Engine"
