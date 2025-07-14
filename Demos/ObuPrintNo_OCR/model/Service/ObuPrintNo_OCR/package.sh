@@ -48,12 +48,11 @@ echo "Docker镜像打包成功。"
 # --- 步骤 5: 创建最终的一体化交付包 ---
 echo "正在创建一体化交付包: ${FINAL_BUNDLE_NAME}..."
 # 将巨大的镜像tar包和所有轻量级的部署文件，一起打包进最终的压缩包
-tar -czvf ${FINAL_BUNDLE_NAME} \
+tar --no-same-owner -czvf ${FINAL_BUNDLE_NAME} \
     ${IMAGE_TARBALL_NAME_TEMP} \
     config.py \
     docker-compose.prod.yml \
     start_prod.sh \
-    load_img.py \
     version.txt \
     model \
     .env
