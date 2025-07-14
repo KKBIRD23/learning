@@ -4,7 +4,7 @@ services:
   obu-ocr-app:
     # 在开发时，我们通常使用build来实时构建，或者使用一个固定的基础镜像
     build: .
-    image: obu-ocr-service-dev:v3.0
+    image: obu-ocr-service:v4.0
     container_name: obu-ocr-container-dev
     restart: unless-stopped
     ports:

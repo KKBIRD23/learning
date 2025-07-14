@@ -17,11 +17,11 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 # --- 权限检查 ---
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}错误: 此脚本需要使用 sudo 或以 root 用户身份运行。${NC}"
-   echo -e "${YELLOW}请尝试使用: sudo $0${NC}"
-   exit 1
-fi
+#if [[ $EUID -ne 0 ]]; then
+#   echo -e "${RED}错误: 此脚本需要使用 sudo 或以 root 用户身份运行。${NC}"
+#   echo -e "${YELLOW}请尝试使用: sudo $0${NC}"
+#   exit 1
+#fi
 
 # --- 新旧命令兼容性检测 ---
 COMPOSE_CMD=""
@@ -131,7 +131,7 @@ deploy_new_version() {
         echo -e "${GREEN}.env 文件已成功恢复。${NC}"
     fi
 
-    # --- 阶段四: 读取版本号并更新Compose文件 ---
+    # --- 阶段四: 【核心修正】使用三步走精确替换版本号 ---
     local version_file="version.txt"
     if [ ! -f "$version_file" ]; then
         echo -e "${RED}错误: 解压后未找到版本文件 'version.txt'。${NC}"; return 1;
@@ -142,10 +142,23 @@ deploy_new_version() {
     fi
     echo -e "检测到新版本号: ${GREEN}${new_version}${NC}"
     echo "正在自动更新 ${COMPOSE_FILE} 中的镜像版本..."
-    if ! sed -i "s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${new_version}|g" "${COMPOSE_FILE}"; then
+
+    # 步骤4.1: 定位目标行
+    local line_to_replace=$(grep "^[[:space:]]*image:" "${COMPOSE_FILE}")
+    if [ -z "${line_to_replace}" ]; then
+        echo -e "${RED}错误: 在 ${COMPOSE_FILE} 中未找到 'image:' 配置行！${NC}"; return 1;
+    fi
+
+    # 步骤4.2: 提取不变的前缀
+    local prefix=$(echo "${line_to_replace}" | cut -d ':' -f 1,2)
+
+    # 步骤4.3: 拼接新行并执行最简单的整行替换
+    local new_line="${prefix}:${new_version}"
+    if ! sudo sed -i "s#${line_to_replace}#${new_line}#" "${COMPOSE_FILE}"; then
         echo -e "${RED}错误: 更新 ${COMPOSE_FILE} 失败！${NC}"; return 1;
     fi
     echo -e "${GREEN}${COMPOSE_FILE} 更新成功！${NC}"
+    # --- 修正结束 ---
 
     # --- 阶段五: 加载镜像文件 ---
     mapfile -t images < <(find . -maxdepth 1 -name "${image_file_pattern}" | sort -V)

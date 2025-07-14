@@ -10,10 +10,14 @@ from datetime import datetime
 import base64
 
 # --- 配置 ---
-SERVER_URL_PREDICT = "http://127.0.0.1:5000/predict"
-SERVER_URL_FINALIZE = "http://127.0.0.1:5000/session/finalize"
-SERVER_URL_CONFIRM = "http://127.0.0.1:5000/session/confirm_segment"
-SERVER_URL_REFRESH = "http://127.0.0.1:5000/refresh-cache"
+# SERVER_URL_PREDICT = "http://127.0.0.1:5000/predict"
+# SERVER_URL_FINALIZE = "http://127.0.0.1:5000/session/finalize"
+# SERVER_URL_CONFIRM = "http://127.0.0.1:5000/session/confirm_segment"
+# SERVER_URL_REFRESH = "http://127.0.0.1:5000/refresh-cache"
+SERVER_URL_PREDICT = "http://10.50.15.68:5000/predict"
+SERVER_URL_FINALIZE = "http://10.50.15.68:5000/session/finalize"
+SERVER_URL_CONFIRM = "http://10.50.15.68:5000/session/confirm_segment"
+SERVER_URL_REFRESH = "http://10.50.15.68:5000/refresh-cache"
 
 # --- 测试模式配置 ---
 TEST_MODE = 'full_plate' # 可选: 'full_plate', 'scattered'

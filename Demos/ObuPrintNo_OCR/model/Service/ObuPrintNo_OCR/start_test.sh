@@ -10,7 +10,7 @@ set -e
 
 # --- 变量与颜色定义 ---
 COMPOSE_FILE="docker-compose.test.yml"
-IMAGE_NAME="obu-ocr-service-dev"
+IMAGE_NAME="obu-ocr-service"
 VERSION_FILE="version.txt"
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -20,10 +20,10 @@ NC='\033[0m'
 echo "--- OBU-OCR Development & Test Start Script ---"
 
 # --- 权限检查 ---
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}错误: 此脚本需要使用 sudo 或以 root 用户身份运行。${NC}"
-   exit 1
-fi
+#if [[ $EUID -ne 0 ]]; then
+#   echo -e "${RED}错误: 此脚本需要使用 sudo 或以 root 用户身份运行。${NC}"
+#   exit 1
+#fi
 
 # --- 【核心修正】智能检测并设置正确的 docker compose 命令 ---
 COMPOSE_CMD=""
@@ -44,18 +44,22 @@ if [ ! -f "$VERSION_FILE" ]; then
     echo -e "${RED}错误: 版本文件 '${VERSION_FILE}' 未找到！${NC}"
     exit 1
 fi
-VERSION_FROM_FILE=$(cat "$VERSION_FILE" | tr -d '[:space:]')
-if [ -z "$VERSION_FROM_FILE" ]; then
+NEW_VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+if [ -z "$NEW_VERSION" ]; then
     echo -e "${RED}错误: 版本文件 '${VERSION_FILE}' 为空或格式不正确！${NC}"
     exit 1
 fi
-echo -e "版本检查通过，目标版本: ${GREEN}${VERSION_FROM_FILE}${NC}"
+echo -e "版本检查通过，目标版本: ${GREEN}${NEW_VERSION}${NC}"
 
-# --- 2. 自动更新 docker-compose.test.yml ---
+# --- 2. 替换版本号 ---
 echo "正在更新 ${COMPOSE_FILE} 中的镜像版本..."
-if ! sed -i "s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${VERSION_FROM_FILE}|g" "${COMPOSE_FILE}"; then
-    echo -e "${RED}错误: 更新 ${COMPOSE_FILE} 失败！${NC}"
-    exit 1
+# 构造一个100%格式正确的新行
+new_image_line="    image: obu-ocr-service:${NEW_VERSION}"
+echo ${new_image_line}
+# 使用'c\'命令，找到以'image:'开头的行，并用新行将其完全替换
+# 这是最健壮、最不依赖于原始文件格式的方法
+if ! sudo sed -i "/^[[:space:]]*image:/c\\${new_image_line}" "${COMPOSE_FILE}"; then
+    echo -e "${RED}错误: 更新 ${COMPOSE_FILE} 失败！${NC}"; return 1;
 fi
 echo -e "${GREEN}${COMPOSE_FILE} 更新成功！${NC}"
 
